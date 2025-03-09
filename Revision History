@@ -1,0 +1,10 @@
+3.8 zdk :
+我看了一下好像有一些问题。首先是可视化一开始出错了只会显示最后一个时间步的状态，我给他修好了还加
+了一个拖拽栏方便观察。然后原来的逻辑里Level(灾情登记）和need rescue（需要救援的总时间）这两个
+变量和逻辑和判断成功的逻辑不太对。我修改为仅有need rescue先到0才算成功。
+
+发现原来在救援执行时，同时减少了两个值：
+disasters[(target_x, target_y)]["level"] -= rescuer["capacity"] - 减少灾情严重程度
+disasters[(target_x, target_y)]["rescue_needed"] -= 1 - 减少所需救援次数
+现在修改为在救援执行时只减少rescue_needed。当 level=0 时，表示灾情自然结束了
+但如果此时 rescue_needed 不为 0，说明灾情没有得到成功救助

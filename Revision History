@@ -16,7 +16,7 @@ disasters[(target_x, target_y)]["rescue_needed"] -= 1 - 减少所需救援次数
 救援执行逻辑中，无论救援人员的capacity是多少，每次救援都是将灾情点的rescue_needed减1。
 也就是说，当前系统中救援人员的capacity参数实际上没有被使用。
 
-目前，level 和 rescue_needed 是独立随机生成的，没有关联性。修改为救援能力强的先去重灾区
+目前，level 和 rescue_needed 是独立随机生成的，没有关联性。修改为level越大，rescue_needed越大
 
 修改了救援执行逻辑，使得救援人员的capacity参数被正确使用。救援能力强的先去重灾区。
 计算能力匹配度：灾情点的rescue_needed与救援员capacity的比例，越接近1越好

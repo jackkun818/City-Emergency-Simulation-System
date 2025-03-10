@@ -55,7 +55,7 @@ def main():
         execute_rescue(env.rescuers, env.disasters, config.GRID_SIZE)  # 让救援人员前往目标点执行救援
 
         # 4️⃣ 记录救援进度（用于绘制成功率曲线）
-        success_rate = calculate_rescue_success_rate(env.disasters)  # 计算当前救援成功率
+        success_rate = calculate_rescue_success_rate(env.disasters, window=30)  # 计算过去30个时间步的救援成功率
         progress_data.append((time_step, success_rate))  # 记录时间步和救援成功率
         
         # 验证救援统计数据（每10个时间步验证一次，避免输出过多）
@@ -64,8 +64,12 @@ def main():
         
         # 不再删除灾情点，而是在update_disasters中确保不更新已冻结的灾情点
         
-        # 保存当前环境状态的快照
-        env_snapshots.append(copy.deepcopy(env))
+        # 保存当前环境状态的快照和成功率数据
+        env_snapshots.append({
+            "env": copy.deepcopy(env),
+            "time_step": time_step,
+            "success_rate": success_rate
+        })
 
         # 5️⃣ 等待短暂时间，模拟现实救援节奏（可选）
         time.sleep(0.1)  # 休眠 0.1 秒，模拟真实救援节奏
@@ -83,8 +87,8 @@ def main():
     print(f"   - Average response time: {avg_response_time:.2f} time units")  # 输出平均响应时间
     print(f"   - Resource utilization: {resource_utilization * 100:.2f}%")  # 输出资源利用率
 
-    # 6️⃣ 可视化救援过程
-    visualize(env_snapshots)  # 修改为传递环境快照列表
+    # 6️⃣ 可视化救援过程（包含救援成功率曲线）
+    visualize(env_snapshots, progress_data)  # 传递环境快照列表和进度数据
 
     # 7️⃣ 绘制救援成功率曲线
     plot_rescue_progress(progress_data)  # 绘制救援进度曲线

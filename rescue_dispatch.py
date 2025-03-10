@@ -107,13 +107,33 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
         key=lambda p: min_distance_to_rescuer(p, rescuers, grid_size)
     )
 
-    # 4️⃣ 依次为每个救援人员分配最优目标
-    for rescuer in rescuers:
+    # 4️⃣ 首先按照救援能力（capacity）对救援人员进行排序，能力强的优先分配
+    sorted_rescuers = sorted(
+        rescuers, 
+        key=lambda r: r.get("capacity", 0), 
+        reverse=True  # 能力强的排在前面
+    )
+    
+    # 记录已分配的目标，避免多人前往同一灾情点
+    assigned_targets = set()
+    
+    # 为每个救援人员分配最优目标，能力强的先选择
+    for rescuer in sorted_rescuers:
+        # 如果已有目标且目标有效，则跳过
+        if "target" in rescuer and rescuer["target"] is not None and rescuer["target"] in task_pool:
+            assigned_targets.add(rescuer["target"])  # 标记此目标已被分配
+            continue
+            
         best_target = None
         best_score = -1
 
+        # 按优先级依次考虑不同类型灾情
         for priority_list in [critical_disasters, moderate_disasters, minor_disasters]:
             for target in priority_list:
+                # 跳过已分配的目标
+                if target in assigned_targets:
+                    continue
+                    
                 if target in task_pool:
                     task = task_pool[target]
                     rsi = calculate_rsi(task["data"], task["assigned"])
@@ -124,7 +144,16 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
                     # ✅ 使用 A* 计算最短路径，优化路径选择
                     path = a_star_search(grid_size, rescuer["position"], target)
                     distance = len(path) if path else min_distance_to_rescuer(target, rescuers, grid_size)
-                    score = task["data"]["level"] / (distance + 1)
+                    
+                    # 综合考虑灾情等级、能力匹配度和距离
+                    # 计算能力匹配度：灾情点的rescue_needed与救援员capacity的比例，越接近1越好
+                    capacity_match = min(
+                        rescuer.get("capacity", 1) / task["data"].get("rescue_needed", 1),
+                        1.0
+                    )
+                    
+                    # 新的评分公式：结合灾情等级、能力匹配度和距离
+                    score = (task["data"]["level"] * capacity_match) / (distance + 1)
 
                     if score > best_score:
                         best_score = score
@@ -134,6 +163,7 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
         if best_target:
             rescuer["target"] = best_target
             task_pool[best_target]["assigned"] += 1
+            assigned_targets.add(best_target)  # 标记此目标已被分配
 
 
 def min_distance_to_rescuer(disaster_point, rescuers, grid_size):

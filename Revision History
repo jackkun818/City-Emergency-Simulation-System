@@ -11,3 +11,22 @@ disasters[(target_x, target_y)]["rescue_needed"] -= 1 - 减少所需救援次数
 
 3.10sjy：
 改了一下救援人员的救援能力，使得救援能力强的先去重灾区
+
+3.10zdk:
+救援执行逻辑中，无论救援人员的capacity是多少，每次救援都是将灾情点的rescue_needed减1。
+也就是说，当前系统中救援人员的capacity参数实际上没有被使用。
+
+目前，level 和 rescue_needed 是独立随机生成的，没有关联性。修改为救援能力强的先去重灾区
+
+修改了救援执行逻辑，使得救援人员的capacity参数被正确使用。救援能力强的先去重灾区。
+计算能力匹配度：灾情点的rescue_needed与救援员capacity的比例，越接近1越好
+                    capacity_match = min(
+                        rescuer.get("capacity", 1) / task["data"].get("rescue_needed", 1),
+                        1.0
+                    )
+                    
+                    # 新的评分公式：结合灾情等级、能力匹配度和距离
+                    score = (task["data"]["level"] * capacity_match) / (distance + 1)
+
+首先救援成功率改为统计过去30个时间步中的成功率而不是全局成功率。
+然后救援成功率的可视化与过程可视化一起显示且和拖拽条功能适配

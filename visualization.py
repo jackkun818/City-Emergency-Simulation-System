@@ -10,25 +10,48 @@ matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', '
 matplotlib.rcParams['axes.unicode_minus'] = False
 import time  # 用于控制动画帧率
 
-def visualize(env_snapshots):
+def visualize(env_snapshots, progress_data=None):
     """
     Enhanced Visualization:
     - 🚑 Display A* planned rescue paths
     - 🔴 Disaster points (severe) → 🟡 Disaster points (reduced) → 🟢 Rescue completed
     - 📊 Task progress bar
+    - 📈 Rescue success rate curve
     """
     
     # 如果只有一个环境状态（向后兼容）
     if not isinstance(env_snapshots, list):
         env_snapshots = [env_snapshots]
         
-    # 获取网格大小（从第一个快照）
-    grid_size = env_snapshots[0].GRID_SIZE  # Get grid size
+    # 从环境快照中提取数据
+    extracted_envs = []
+    time_steps = []
+    success_rates = []
     
-    # 创建图形并调整布局，为滑动条留出空间
-    fig = plt.figure(figsize=(12, 10))
-    grid_ax = plt.subplot2grid((8, 1), (0, 0), rowspan=7)  # 主网格区域
-    slider_ax = plt.subplot2grid((8, 1), (7, 0))  # 滑动条区域
+    for snapshot in env_snapshots:
+        if isinstance(snapshot, dict):
+            # 新格式：包含env、time_step和success_rate
+            extracted_envs.append(snapshot["env"])
+            time_steps.append(snapshot["time_step"])
+            success_rates.append(snapshot["success_rate"])
+        else:
+            # 旧格式：直接是环境对象
+            extracted_envs.append(snapshot)
+            
+    # 如果没有提取出环境对象，使用旧的逻辑
+    if not extracted_envs:
+        extracted_envs = env_snapshots
+        
+    # 获取网格大小（从第一个快照）
+    grid_size = extracted_envs[0].GRID_SIZE  # Get grid size
+    
+    # 创建图形并调整布局，为滑动条和成功率图表留出空间
+    fig = plt.figure(figsize=(14, 12))
+    
+    # 创建网格、成功率图和滑动条的子图区域
+    grid_ax = plt.subplot2grid((10, 2), (0, 0), rowspan=7, colspan=2)  # 主网格区域(70%)
+    rate_ax = plt.subplot2grid((10, 2), (7, 0), rowspan=2, colspan=2)  # 成功率图区域(20%)
+    slider_ax = plt.subplot2grid((10, 2), (9, 0), rowspan=1, colspan=2)  # 滑动条区域(10%)
     
     # 设置网格和固定边界
     grid_ax.set_xticks(range(grid_size))
@@ -46,7 +69,7 @@ def visualize(env_snapshots):
         ax=slider_ax,
         label='Time Step',
         valmin=0,
-        valmax=len(env_snapshots) - 1,
+        valmax=len(extracted_envs) - 1,
         valinit=0,
         valstep=1,
         color='skyblue'
@@ -54,6 +77,42 @@ def visualize(env_snapshots):
     
     # 初始显示第一帧
     current_frame = 0
+    
+    # 绘制成功率曲线
+    def plot_success_rate():
+        rate_ax.clear()
+        
+        # 如果有来自快照的成功率数据，优先使用
+        if time_steps and success_rates:
+            rate_ax.plot(time_steps, success_rates, marker="o", linestyle="-", 
+                        color="b", label="Rescue Success Rate (30-step window)")
+        # 否则使用传入的progress_data
+        elif progress_data:
+            times, rates = zip(*progress_data)
+            rate_ax.plot(times, rates, marker="o", linestyle="-", 
+                        color="b", label="Rescue Success Rate")
+        
+        rate_ax.set_xlabel("Time Step")
+        rate_ax.set_ylabel("Success Rate")
+        rate_ax.set_title("Rescue Success Rate Over Time")
+        rate_ax.legend(loc='upper left')
+        rate_ax.grid(True)
+        
+        # 设置y轴范围为0-1
+        rate_ax.set_ylim(0, 1.05)
+        
+        # 如果当前时间步有值，在图上标记当前位置
+        if current_frame < len(time_steps):
+            current_time = time_steps[current_frame]
+            # 在当前时间步画一条垂直线
+            rate_ax.axvline(x=current_time, color='r', linestyle='--', alpha=0.7)
+            
+            # 如果有对应的成功率值，显示一个点
+            if current_frame < len(success_rates):
+                rate_ax.plot(current_time, success_rates[current_frame], 'ro', ms=10)
+    
+    # 绘制初始成功率图
+    plot_success_rate()
     
     def update_plot(frame=None):
         """更新绘图函数，可以被滑动条或动画调用"""
@@ -63,8 +122,8 @@ def visualize(env_snapshots):
             current_frame = int(frame)
             
         # 确保frame在快照范围内
-        frame_idx = min(current_frame, len(env_snapshots) - 1)
-        env = env_snapshots[frame_idx]  # 获取当前时间步的环境状态
+        frame_idx = min(current_frame, len(extracted_envs) - 1)
+        env = extracted_envs[frame_idx]  # 获取当前时间步的环境状态
         
         grid_ax.clear()  # Clear current plot
         grid_ax.set_xticks(range(grid_size))
@@ -72,7 +131,7 @@ def visualize(env_snapshots):
         grid_ax.set_xticklabels([])
         grid_ax.set_yticklabels([])
         grid_ax.grid(True)  # Re-enable grid lines
-        grid_ax.set_title(f"City Emergency Rescue Simulation - Time Step {frame_idx}")  # Set title
+        grid_ax.set_title(f"City Emergency Rescue Simulation - Time Step {time_steps[frame_idx] if time_steps else frame_idx}")  # Set title
         
         # 重新设置固定的坐标轴范围
         grid_ax.set_xlim(-0.5, grid_size - 0.5)
@@ -166,6 +225,9 @@ def visualize(env_snapshots):
         if has_legend:
             grid_ax.legend(loc='upper right')
             
+        # 更新成功率图表，显示当前时间步
+        plot_success_rate()
+        
         fig.canvas.draw_idle()  # 重绘画布
         return grid_ax
     
@@ -191,8 +253,9 @@ def visualize(env_snapshots):
         # 由FuncAnimation自动调用，不需要检查状态
         nonlocal current_frame
         try:
-            current_frame = (current_frame + 1) % len(env_snapshots)
+            current_frame = (current_frame + 1) % len(extracted_envs)
             time_slider.set_val(current_frame)
+            # 滑动条的更新会触发update_plot，同时更新成功率图表
         except Exception as e:
             print(f"Animation error: {e}")
         return []  # 返回空列表，因为我们通过slider更新
@@ -248,10 +311,12 @@ def visualize(env_snapshots):
     
     fig.canvas.mpl_connect('close_event', on_close)
     
+    # 使用环境快照的数量作为帧数
+    frames_count = len(extracted_envs)
     play_button.on_clicked(toggle_animation)
     
     # 调整布局
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.2)
+    plt.subplots_adjust(bottom=0.15)
     
     plt.show()  # Display figure

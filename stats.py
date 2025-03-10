@@ -1,22 +1,46 @@
 import matplotlib.pyplot as plt
 import matplotlib
+import time
 # Use generic English fonts, remove SimHei reference
 matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', 'Tahoma', 'Verdana']
 # Keep this setting to ensure minus signs display correctly
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-def calculate_rescue_success_rate(disasters):
+def calculate_rescue_success_rate(disasters, window=30):
     """
     Calculate rescue success rate: number of successful rescue tasks / total tasks
+    in the last 'window' time steps
     :param disasters: { (x, y): {"level": 0, "rescue_needed": 5, "start_time": 2, "end_time": 10} }
+    :param window: Number of time steps to consider for the success rate calculation
     :return: float Rescue success rate (between 0~1)
     """
+    current_time = time.time()
+    
+    # 筛选过去window个时间步内的灾情点
+    recent_disasters = {}
+    for pos, data in disasters.items():
+        # 如果有end_time，判断是否在窗口内
+        if "end_time" in data:
+            time_diff = current_time - data["end_time"]
+            # 假设每个时间步约为0.5秒（根据实际情况调整）
+            if time_diff <= window * 0.5:
+                recent_disasters[pos] = data
+        # 如果没有end_time，表示灾情正在进行，也应考虑
+        else:
+            # 确保start_time存在
+            if "start_time" in data and current_time - data["start_time"] <= window * 0.5:
+                recent_disasters[pos] = data
+    
+    # 如果窗口内没有灾情点，使用所有灾情点
+    if not recent_disasters:
+        recent_disasters = disasters
+    
     # 计算总灾情点数，包括已冻结的
-    total_disasters = len(disasters)
+    total_disasters = len(recent_disasters)
     
     # 计算成功救援的灾情点数量 (有rescue_success=True标记的)
-    successful_rescues = sum(1 for d in disasters.values() if d.get("rescue_success", False))
+    successful_rescues = sum(1 for d in recent_disasters.values() if d.get("rescue_success", False))
     
     # 如果没有灾情点，返回100%成功率
     return successful_rescues / total_disasters if total_disasters > 0 else 1.0

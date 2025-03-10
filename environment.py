@@ -21,7 +21,7 @@ class Environment:
         """ 初始化救援人员并设置差异化的能力和速度 """
         for i in range(self.num_rescuers):
             # 随机生成每个救援人员的能力和速度
-            capacity = random.randint(1, 5)  # 救援能力在1到5之间
+            capacity = random.randint(1, 3)  # 救援能力在1到3之间
             speed = random.randint(1, 3)  # 移动速度在1到3之间
 
             self.rescuers.append({
@@ -47,10 +47,21 @@ class Environment:
         for _ in range(int(new_disaster_chance * self.GRID_SIZE)):  # 减少生成频率，避免地图过于拥挤
             x, y = np.random.randint(0, self.GRID_SIZE, size=2)
             if (x, y) not in self.disasters:
+                # 先生成level，范围5-10
+                level = np.random.randint(5, 11)  # 注意上限改为11，使范围包含10
+                
+       
+                if level <= 6:
+                    rescue_needed = np.random.randint(5, 6)  
+                elif level <= 8:
+                    rescue_needed = np.random.randint(7, 8)  
+                else:
+                    rescue_needed = np.random.randint(9, 10)  
+                
                 # 新灾情点加入初始时间
                 self.disasters[(x, y)] = {
-                    "level": np.random.randint(5, 10),
-                    "rescue_needed": np.random.randint(2, 5),
+                    "level": level,
+                    "rescue_needed": rescue_needed,
                     "start_time": time.time(),  # 记录灾情点出现的时间
                     "frozen_level": False,  # 初始状态为未冻结
                     "frozen_rescue": False,  # 初始状态为未冻结

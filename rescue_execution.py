@@ -84,14 +84,17 @@ def execute_rescue(rescuers, disasters, grid_size):
                     print(f"❌ 错误: 救援人员 {rescuer['id']} 缺少 `capacity`，请检查 `environment.py`")
                     continue
 
-                # 进行救援 - 只减少rescue_needed，不减少level
-                disasters[(target_x, target_y)]["rescue_needed"] -= 1
+                # 进行救援 - 按照救援人员的capacity减少rescue_needed
+                # 计算实际减少量（不超过当前rescue_needed值）
+                reduction = min(rescuer.get("capacity", 1), disasters[(target_x, target_y)]["rescue_needed"])
+                disasters[(target_x, target_y)]["rescue_needed"] -= reduction
 
                 # ✅ 确保rescue_needed不会小于0
                 disasters[(target_x, target_y)]["rescue_needed"] = max(0,
                                                                        disasters[(target_x, target_y)]["rescue_needed"])
 
-                print(f"🚑 救援人员 {rescuer['id']} 在 {target_x, target_y} 进行救援，"
+                print(f"🚑 救援人员 {rescuer['id']} (能力={rescuer.get('capacity', 1)}) 在 {target_x, target_y} 进行救援，"
+                      f"减少rescue_needed: {reduction}，"
                       f"剩余等级: {disasters[(target_x, target_y)]['level']}，"
                       f"剩余需要救援: {disasters[(target_x, target_y)]['rescue_needed']}")
 

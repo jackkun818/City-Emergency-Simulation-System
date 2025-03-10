@@ -95,17 +95,48 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
     )
 
     # 2️⃣ 其次，对中等灾情（Moderate）执行混合评分调度（HSD）
-    moderate_disasters = sorted(
-        [point for point, task in task_pool.items() if classify_disaster(task["data"]) == "Moderate"],
-        key=lambda p: disasters[p]["level"] / (min_distance_to_rescuer(p, rescuers, grid_size) + 1),
-        reverse=True
-    )
+    # 考虑灾情等级与到达时间的比例，而不仅仅是距离
+    moderate_disasters = []
+    for point in [p for p, task in task_pool.items() if classify_disaster(task["data"]) == "Moderate"]:
+        # 找到最快能到达该点的救援者
+        min_arrival_time = float('inf')
+        for rescuer in rescuers:
+            if "target" in rescuer and rescuer["target"] is not None:
+                continue  # 跳过已有任务的救援者
+            
+            path = a_star_search(grid_size, rescuer["position"], point)
+            distance = len(path) if path else (abs(rescuer["position"][0] - point[0]) + abs(rescuer["position"][1] - point[1]))
+            rescuer_speed = rescuer.get("speed", 1)
+            arrival_time = distance / rescuer_speed if rescuer_speed > 0 else float('inf')
+            min_arrival_time = min(min_arrival_time, arrival_time)
+        
+        # 计算评分：灾情等级 / 到达时间
+        score = disasters[point]["level"] / (min_arrival_time + 1)
+        moderate_disasters.append((point, score))
+    
+    # 按评分从高到低排序
+    moderate_disasters = [p for p, _ in sorted(moderate_disasters, key=lambda x: x[1], reverse=True)]
 
     # 3️⃣ 最后，对轻度灾情（Minor）执行最近任务优先（NTF）
-    minor_disasters = sorted(
-        [point for point, task in task_pool.items() if classify_disaster(task["data"]) == "Minor"],
-        key=lambda p: min_distance_to_rescuer(p, rescuers, grid_size)
-    )
+    # 考虑到达时间而不仅仅是距离
+    minor_disasters = []
+    for point in [p for p, task in task_pool.items() if classify_disaster(task["data"]) == "Minor"]:
+        # 找到最快能到达该点的救援者
+        min_arrival_time = float('inf')
+        for rescuer in rescuers:
+            if "target" in rescuer and rescuer["target"] is not None:
+                continue  # 跳过已有任务的救援者
+            
+            path = a_star_search(grid_size, rescuer["position"], point)
+            distance = len(path) if path else (abs(rescuer["position"][0] - point[0]) + abs(rescuer["position"][1] - point[1]))
+            rescuer_speed = rescuer.get("speed", 1)
+            arrival_time = distance / rescuer_speed if rescuer_speed > 0 else float('inf')
+            min_arrival_time = min(min_arrival_time, arrival_time)
+        
+        minor_disasters.append((point, min_arrival_time))
+    
+    # 按到达时间从低到高排序
+    minor_disasters = [p for p, _ in sorted(minor_disasters, key=lambda x: x[1])]
 
     # 4️⃣ 首先按照救援能力（capacity）对救援人员进行排序，能力强的优先分配
     sorted_rescuers = sorted(
@@ -145,15 +176,22 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
                     path = a_star_search(grid_size, rescuer["position"], target)
                     distance = len(path) if path else min_distance_to_rescuer(target, rescuers, grid_size)
                     
-                    # 综合考虑灾情等级、能力匹配度和距离
+                    # 获取救援者的移动速度，默认为1
+                    rescuer_speed = rescuer.get("speed", 1)
+                    
+                    # 计算到达时间 = 距离 / 速度
+                    arrival_time = distance / rescuer_speed if rescuer_speed > 0 else float('inf')
+                    
+                    # 综合考虑灾情等级、能力匹配度和到达时间
                     # 计算能力匹配度：灾情点的rescue_needed与救援员capacity的比例，越接近1越好
                     capacity_match = min(
                         rescuer.get("capacity", 1) / task["data"].get("rescue_needed", 1),
                         1.0
                     )
                     
-                    # 新的评分公式：结合灾情等级、能力匹配度和距离
-                    score = (task["data"]["level"] * capacity_match) / (distance + 1)
+                    # 新的评分公式：结合灾情等级、能力匹配度和到达时间
+                    # 到达时间越短，评分越高
+                    score = (task["data"]["level"] * capacity_match) / (arrival_time + 1)
 
                     if score > best_score:
                         best_score = score

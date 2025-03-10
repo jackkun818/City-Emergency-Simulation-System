@@ -9,7 +9,8 @@ from stats import (
     calculate_average_response_time,  # 计算平均响应时间
     calculate_resource_utilization,  # 计算资源利用率
     plot_rescue_progress,  # 绘制救援进度曲线
-    verify_rescue_stats  # 验证救援统计数据
+    verify_rescue_stats,  # 验证救援统计数据
+    show_disaster_distribution  # 显示灾情点时间分布
 )
 import copy
 
@@ -61,6 +62,8 @@ def main():
         # 验证救援统计数据（每10个时间步验证一次，避免输出过多）
         if time_step % 10 == 0:
             verify_rescue_stats(env.disasters, progress_data, time_step)
+            # 显示灾情点时间分布（用于调试）
+            show_disaster_distribution(env.disasters, window=config.STATS_WINDOW_SIZE, current_time_step=time_step)
         
         # 不再删除灾情点，而是在update_disasters中确保不更新已冻结的灾情点
         

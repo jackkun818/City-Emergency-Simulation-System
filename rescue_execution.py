@@ -1,6 +1,7 @@
 import heapq
 import time
 
+
 def a_star_search(grid_size, start, goal):
     """
     使用 A* 算法计算最短路径，避免救援人员绕路，提高救援效率。
@@ -57,7 +58,7 @@ def execute_rescue(rescuers, disasters, grid_size):
     """
     # 创建已完成救援的灾情点列表，避免在遍历过程中直接删除字典元素
     completed_disasters = []
-    
+
     for rescuer in rescuers:
         # 确保救援人员有目标
         if "target" in rescuer and rescuer["target"] is not None and rescuer["target"] in disasters:
@@ -87,7 +88,8 @@ def execute_rescue(rescuers, disasters, grid_size):
                 disasters[(target_x, target_y)]["rescue_needed"] -= 1
 
                 # ✅ 确保rescue_needed不会小于0
-                disasters[(target_x, target_y)]["rescue_needed"] = max(0, disasters[(target_x, target_y)]["rescue_needed"])
+                disasters[(target_x, target_y)]["rescue_needed"] = max(0,
+                                                                       disasters[(target_x, target_y)]["rescue_needed"])
 
                 print(f"🚑 救援人员 {rescuer['id']} 在 {target_x, target_y} 进行救援，"
                       f"剩余等级: {disasters[(target_x, target_y)]['level']}，"
@@ -102,11 +104,12 @@ def execute_rescue(rescuers, disasters, grid_size):
                     if "end_time" not in disasters[(target_x, target_y)]:
                         disasters[(target_x, target_y)]["end_time"] = time.time()
                     rescuer["target"] = None  # 任务完成，清除目标
-    
+
     # 清除救援人员的无效目标
     for rescuer in rescuers:
         # 如果救援人员的目标是已完成救援或自然结束的灾情点，清除其目标
         if "target" in rescuer and rescuer["target"] is not None and rescuer["target"] in disasters:
             target_x, target_y = rescuer["target"]
-            if disasters[(target_x, target_y)].get("frozen_rescue", False) or disasters[(target_x, target_y)].get("frozen_level", False):
+            if disasters[(target_x, target_y)].get("frozen_rescue", False) or disasters[(target_x, target_y)].get(
+                    "frozen_level", False):
                 rescuer["target"] = None

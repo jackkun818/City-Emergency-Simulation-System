@@ -32,8 +32,11 @@ class Environment:
                 "speed": speed
             })
 
-    def update_disasters(self):
-        """ 模拟灾情的出现和变化 """
+    def update_disasters(self, current_time_step=None):
+        """ 
+        模拟灾情的出现和变化
+        :param current_time_step: 当前的时间步，用于记录灾情点的创建时间
+        """
         # 更新红叉计数器
         for pos, disaster in list(self.disasters.items()):
             # 如果红叉计数器大于0，则递减
@@ -58,11 +61,12 @@ class Environment:
                 else:
                     rescue_needed = np.random.randint(9, 10)  
                 
-                # 新灾情点加入初始时间
+                # 新灾情点加入初始时间和时间步信息
                 self.disasters[(x, y)] = {
                     "level": level,
                     "rescue_needed": rescue_needed,
                     "start_time": time.time(),  # 记录灾情点出现的时间
+                    "time_step": current_time_step,  # 记录灾情点创建的时间步
                     "frozen_level": False,  # 初始状态为未冻结
                     "frozen_rescue": False,  # 初始状态为未冻结
                     "rescue_success": False,  # 初始状态为未救援成功
@@ -87,9 +91,9 @@ class Environment:
                     disaster["show_red_x"] = 2  # 显示红叉
                     disaster["frozen_level"] = True  # 冻结level，防止进一步减弱
                     disaster["rescue_success"] = False  # 明确标记为救援失败
-                    # 设置结束时间
-                    if "end_time" not in disaster:
-                        disaster["end_time"] = time.time()
+                    # 设置结束时间步
+                    if current_time_step:
+                        disaster["end_time"] = current_time_step
                     print(f"⚪ 灾情点 {pos} 未能成功救援！")
 
 

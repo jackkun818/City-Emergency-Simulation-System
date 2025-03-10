@@ -48,13 +48,14 @@ def a_star_search(grid_size, start, goal):
     return []  # 如果找不到路径，返回空路径
 
 
-def execute_rescue(rescuers, disasters, grid_size):
+def execute_rescue(rescuers, disasters, grid_size, current_time_step=None):
     """
     让救援人员按照 A* 规划路径前往目标灾情点并执行救援任务。
 
     :param rescuers: 救援人员列表，每个救援人员包含 {"id", "position", "speed", "capacity", "target"}
     :param disasters: 当前所有灾情点，格式：{(x, y): {"level": 10, "rescue_needed": 5}}
     :param grid_size: 城市地图网格大小
+    :param current_time_step: 当前时间步，用于记录灾情点的结束时间
     """
     # 创建已完成救援的灾情点列表，避免在遍历过程中直接删除字典元素
     completed_disasters = []
@@ -104,8 +105,8 @@ def execute_rescue(rescuers, disasters, grid_size):
                     disasters[(target_x, target_y)]["frozen_rescue"] = True
                     disasters[(target_x, target_y)]["rescue_success"] = True  # 标记为成功救援
                     # 设置结束时间（用于统计）
-                    if "end_time" not in disasters[(target_x, target_y)]:
-                        disasters[(target_x, target_y)]["end_time"] = time.time()
+                    if current_time_step:
+                        disasters[(target_x, target_y)]["end_time"] = current_time_step
                     rescuer["target"] = None  # 任务完成，清除目标
 
     # 清除救援人员的无效目标

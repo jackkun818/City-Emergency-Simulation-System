@@ -43,7 +43,7 @@ def main():
 
         # 1️⃣ 更新灾情信息
         try:
-            env.update_disasters()  # 更新灾情状态
+            env.update_disasters(current_time_step=time_step)  # 更新灾情状态
         except AttributeError:
             print("❌ Error: `update_disasters()` method does not exist. Please check `environment.py`.")  # 输出错误提示
             return  # 终止程序
@@ -52,10 +52,10 @@ def main():
         hybrid_rescue_dispatch(env.rescuers, env.disasters, config.GRID_SIZE)  # 调用智能调度算法分配救援任务
 
         # 3️⃣ 执行救援任务（人员前往灾情点 & 进行救援）
-        execute_rescue(env.rescuers, env.disasters, config.GRID_SIZE)  # 让救援人员前往目标点执行救援
+        execute_rescue(env.rescuers, env.disasters, config.GRID_SIZE, current_time_step=time_step)  # 让救援人员前往目标点执行救援
 
         # 4️⃣ 记录救援进度（用于绘制成功率曲线）
-        success_rate = calculate_rescue_success_rate(env.disasters, window=30)  # 计算过去30个时间步的救援成功率
+        success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE, current_time_step=time_step)  # 使用配置文件中的窗口大小
         progress_data.append((time_step, success_rate))  # 记录时间步和救援成功率
         
         # 验证救援统计数据（每10个时间步验证一次，避免输出过多）

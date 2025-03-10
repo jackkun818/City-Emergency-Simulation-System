@@ -10,3 +10,6 @@ RESOURCE_SATURATION_THRESHOLD = 1.0  # 资源饱和度阈值
 MAX_RESCUE_CAPACITY = 3  # 每个救援人员的最大救援能力
 MAX_SPEED = 2  # 救援人员最大移动速度
 SIMULATION_TIME = 200  # 总模拟时间
+
+# 统计参数
+STATS_WINDOW_SIZE = 20  # 统计窗口大小（用于计算救援成功率）

@@ -15,6 +15,63 @@ from stats import (
 import copy
 
 
+def select_disaster_scale():
+    """显示当前使用的灾难规模信息（不通过用户输入设置）"""
+    scale = config.DISASTER_SCALE
+    
+    print("\n==== 灾难规模信息 ====")
+    if scale == 0:
+        preset = config.DISASTER_PRESETS[0]
+        print(f"使用小型灾难 - 小型网格({preset['grid_size']}x{preset['grid_size']}), "
+              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
+    elif scale == 1:
+        preset = config.DISASTER_PRESETS[1]
+        print(f"使用中型灾难 - 中型网格({preset['grid_size']}x{preset['grid_size']}), "
+              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
+    elif scale == 2:
+        preset = config.DISASTER_PRESETS[2]
+        print(f"使用大型灾难 - 大型网格({preset['grid_size']}x{preset['grid_size']}), "
+              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
+    elif scale == 3:
+        print(f"使用自定义灾难 - 网格大小({config.GRID_SIZE}x{config.GRID_SIZE}), "
+              f"灾情生成概率({config.DISASTER_SPAWN_RATE}), 衰减步数{config.SPAWN_RATE_DECAY_STEPS}")
+    else:
+        print("警告：未知的灾难规模设置，将使用默认的中型灾难")
+        config.DISASTER_SCALE = 1
+        preset = config.DISASTER_PRESETS[1]
+        print(f"使用中型灾难 - 中型网格({preset['grid_size']}x{preset['grid_size']}), "
+              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
+    
+    print(f"救援人员数量: {config.NUM_RESCUERS}")
+    print("注意：要修改这些设置，请直接编辑config.py文件")
+    
+    # 以下是原始的用户输入代码，现在被注释掉
+    """
+    while True:
+        try:
+            choice = int(input("请选择灾难规模 (0-3): "))
+            if 0 <= choice <= 3:
+                config.DISASTER_SCALE = choice
+                break
+            else:
+                print("无效选择，请输入0-3之间的数字")
+        except ValueError:
+            print("无效输入，请输入0-3之间的数字")
+    
+    # 单独设置救援人员数量
+    while True:
+        try:
+            rescuer_count = int(input(f"请输入救援人员数量 (默认为{config.NUM_RESCUERS}): ") or config.NUM_RESCUERS)
+            if rescuer_count > 0:
+                config.NUM_RESCUERS = rescuer_count
+                break
+            else:
+                print("救援人员数量必须大于0")
+        except ValueError:
+            print("无效输入，请输入一个正整数")
+    """
+
+
 def main():
     """
     城市应急救援模拟主函数：
@@ -23,15 +80,17 @@ def main():
     3. 可视化救援过程
     4. 计算救援统计数据
     """
+    # 选择灾难规模
+    select_disaster_scale()
 
     print("🚀 Initializing urban rescue simulation environment...")  # 输出初始化城市救援模拟环境
 
     try:
-        # 初始化环境，包括设置网格大小和救援人员数量
-        env = Environment(grid_size=config.GRID_SIZE, num_rescuers=config.NUM_RESCUERS)
+        # 使用新的配置系统初始化环境，不再直接传递参数
+        env = Environment()
     except TypeError as e:
         print(f"❌ Environment initialization failed: {e}")  # 输出环境初始化失败的错误信息
-        print("⚠️ Please check if `environment.py` supports `grid_size` and `num_rescuers` as parameters.")  # 提示用户检查 `environment.py` 文件
+        print("⚠️ Please check if `environment.py` supports the new configuration system.")  # 提示用户检查 `environment.py` 文件
         return  # 终止程序
 
     # 初始化数据收集
@@ -50,10 +109,11 @@ def main():
             return  # 终止程序
 
         # 2️⃣ 任务分配（智能调度救援任务）
-        hybrid_rescue_dispatch(env.rescuers, env.disasters, config.GRID_SIZE)  # 调用智能调度算法分配救援任务
+        # 使用环境中的网格大小而不是直接用config中的
+        hybrid_rescue_dispatch(env.rescuers, env.disasters, env.GRID_SIZE)  # 调用智能调度算法分配救援任务
 
         # 3️⃣ 执行救援任务（人员前往灾情点 & 进行救援）
-        execute_rescue(env.rescuers, env.disasters, config.GRID_SIZE, current_time_step=time_step)  # 让救援人员前往目标点执行救援
+        execute_rescue(env.rescuers, env.disasters, env.GRID_SIZE, current_time_step=time_step)  # 让救援人员前往目标点执行救援
 
         # 4️⃣ 记录救援进度（用于绘制成功率曲线）
         success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE, current_time_step=time_step)  # 使用配置文件中的窗口大小

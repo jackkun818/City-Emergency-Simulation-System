@@ -2,18 +2,31 @@ import numpy as np#1
 import random
 import time
 import random
-# 定义城市网格大小
-GRID_SIZE = 10  # 10x10 的网格地图
-NUM_DISASTERS = 5  # 初始灾情点数量
-NUM_RESCUERS = 3  # 初始救援人员数量
+import config  # 导入配置文件
+
+# 这些常量将被 config 中的参数替代
+GRID_SIZE = 10
+NUM_DISASTERS = 5
+NUM_RESCUERS = 3
 
 
 class Environment:
-    def __init__(self, grid_size, num_rescuers):
-        self.GRID_SIZE = grid_size
-        self.num_rescuers = num_rescuers
+    def __init__(self, grid_size=None, num_rescuers=None):
+        # 使用 config 中的参数，如果有传入参数则使用传入的参数
+        self.GRID_SIZE = grid_size if grid_size is not None else config.get_config_param("grid_size")
+        self.num_rescuers = num_rescuers if num_rescuers is not None else config.get_config_param("num_rescuers")
         self.rescuers = []
         self.disasters = {}
+
+        # 打印灾难规模信息
+        if config.DISASTER_SCALE == 3:
+            print(f"使用自定义灾难规模: 网格大小={self.GRID_SIZE}, 灾情生成概率={config.get_config_param('disaster_spawn_rate')}")
+        else:
+            preset = config.DISASTER_PRESETS[config.DISASTER_SCALE]
+            print(f"使用预设灾难规模: {preset['name']}, 网格大小={preset['grid_size']}, 灾情生成概率={preset['disaster_spawn_rate']}")
+        
+        # 打印救援人员信息（独立于灾难规模）
+        print(f"救援人员数量: {self.num_rescuers}")
 
         self.initialize_rescuers()
 
@@ -45,9 +58,17 @@ class Environment:
                 if disaster["show_red_x"] == 0:
                     print(f"📍 灾情点 {pos} 红叉显示时间结束，不再显示")
 
-        # 随机生成新的灾情点
-        new_disaster_chance = 0.2
-        for _ in range(int(new_disaster_chance * self.GRID_SIZE)):  # 减少生成频率，避免地图过于拥挤
+        # 获取当前时间步的实际灾情生成概率
+        if current_time_step is not None:
+            actual_spawn_rate = config.get_actual_spawn_rate(current_time_step)
+            if current_time_step % 10 == 0:  # 每10个时间步打印一次概率
+                print(f"当前时间步: {current_time_step}, 灾情生成概率: {actual_spawn_rate:.3f}")
+        else:
+            # 如果没有提供时间步，使用基础概率
+            actual_spawn_rate = config.get_config_param("disaster_spawn_rate")
+
+        # 随机生成新的灾情点，使用实际生成概率
+        for _ in range(int(actual_spawn_rate * self.GRID_SIZE)):  # 根据网格大小调整生成数量
             x, y = np.random.randint(0, self.GRID_SIZE, size=2)
             if (x, y) not in self.disasters:
                 # 先生成level，范围5-10

@@ -1,48 +1,47 @@
 import time
-import config
-from environment import Environment
-from rescue_dispatch import hybrid_rescue_dispatch
-from rescue_execution import execute_rescue
-from visualization import visualize
-from stats import (
-    calculate_rescue_success_rate,  # 计算救援成功率
-    calculate_average_response_time,  # 计算平均响应时间
-    calculate_resource_utilization,  # 计算资源利用率
-    plot_rescue_progress,  # 绘制救援进度曲线
-    verify_rescue_stats,  # 验证救援统计数据
-    show_disaster_distribution  # 显示灾情点时间分布
+import sys
+import os
+
+# 添加src目录到Python路径
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+# 导入核心模块
+from core.environment import Environment
+from core import config
+from core.rescue_execution import execute_rescue
+
+# 导入RL模块
+from rl.marl_integration import dispatch_rescue_tasks, get_algorithm_name
+
+# 导入工具和可视化模块
+from utils.stats import (
+    calculate_rescue_success_rate,
+    calculate_average_response_time,
+    calculate_resource_utilization,
+    verify_rescue_stats,
+    show_disaster_distribution
 )
+from visualization.visualization import visualize
+
 import copy
 
 
 def select_disaster_scale():
-    """显示当前使用的灾难规模信息（不通过用户输入设置）"""
-    scale = config.DISASTER_SCALE
+    """
+    选择灾难规模并显示当前配置
     
-    print("\n==== 灾难规模信息 ====")
-    if scale == 0:
-        preset = config.DISASTER_PRESETS[0]
-        print(f"使用小型灾难 - 小型网格({preset['grid_size']}x{preset['grid_size']}), "
-              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
-    elif scale == 1:
-        preset = config.DISASTER_PRESETS[1]
-        print(f"使用中型灾难 - 中型网格({preset['grid_size']}x{preset['grid_size']}), "
-              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
-    elif scale == 2:
-        preset = config.DISASTER_PRESETS[2]
-        print(f"使用大型灾难 - 大型网格({preset['grid_size']}x{preset['grid_size']}), "
-              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
-    elif scale == 3:
-        print(f"使用自定义灾难 - 网格大小({config.GRID_SIZE}x{config.GRID_SIZE}), "
-              f"灾情生成概率({config.DISASTER_SPAWN_RATE}), 衰减步数{config.SPAWN_RATE_DECAY_STEPS}")
+    现在直接使用config.py中的配置，不再需要用户输入
+    """
+    # 显示当前灾难规模的信息
+    if config.DISASTER_SCALE in config.DISASTER_PRESETS:
+        preset = config.DISASTER_PRESETS[config.DISASTER_SCALE]
+        print(f"使用{preset['name']} - 网格大小({preset['grid_size']}x{preset['grid_size']}), "
+              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")  
     else:
-        print("警告：未知的灾难规模设置，将使用默认的中型灾难")
-        config.DISASTER_SCALE = 1
-        preset = config.DISASTER_PRESETS[1]
-        print(f"使用中型灾难 - 中型网格({preset['grid_size']}x{preset['grid_size']}), "
-              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")
+        print(f"警告：未知的灾难规模设置：{config.DISASTER_SCALE}")
     
     print(f"救援人员数量: {config.NUM_RESCUERS}")
+    print(f"任务分配算法: {config.TASK_ALLOCATION_ALGORITHM} ({get_algorithm_name()})")
     print("注意：要修改这些设置，请直接编辑config.py文件")
     
     # 以下是原始的用户输入代码，现在被注释掉
@@ -80,6 +79,7 @@ def main():
     3. 可视化救援过程
     4. 计算救援统计数据
     """
+    
     # 选择灾难规模
     select_disaster_scale()
 
@@ -110,7 +110,8 @@ def main():
 
         # 2️⃣ 任务分配（智能调度救援任务）
         # 使用环境中的网格大小而不是直接用config中的
-        hybrid_rescue_dispatch(env.rescuers, env.disasters, env.GRID_SIZE)  # 调用智能调度算法分配救援任务
+        # 使用集成的任务分配方法，替代原来的hybrid_rescue_dispatch
+        dispatch_rescue_tasks(env.rescuers, env.disasters, env.GRID_SIZE, current_time_step=time_step)
 
         # 3️⃣ 执行救援任务（人员前往灾情点 & 进行救援）
         execute_rescue(env.rescuers, env.disasters, env.GRID_SIZE, current_time_step=time_step)  # 让救援人员前往目标点执行救援
@@ -152,9 +153,6 @@ def main():
 
     # 6️⃣ 可视化救援过程（包含救援成功率曲线）
     visualize(env_snapshots, progress_data)  # 传递环境快照列表和进度数据
-
-    # 7️⃣ 绘制救援成功率曲线
-    plot_rescue_progress(progress_data)  # 绘制救援进度曲线
 
 
 # 运行主程序

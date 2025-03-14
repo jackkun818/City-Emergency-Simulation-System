@@ -256,27 +256,39 @@ class Environment:
         from core.rescue_execution import execute_rescue
         execute_rescue(self.rescuers, self.disasters, self.GRID_SIZE, current_time_step=self.current_time_step)
         
-        # 计算奖励
-        # 由于我们没有直接访问MARLController的计算奖励方法
-        # 我们简单实现一个基本的奖励计算
-        reward = -0.1  # 基础时间惩罚
+        # 强制使用RescueEnvironment的奖励计算方法
+        try:
+            from rl.marl_rescue import RescueEnvironment
+            
+            # 创建一个临时环境对象用于奖励计算
+            temp_env = RescueEnvironment(self)
+            reward, reward_info = temp_env.calculate_reward(rescuer_idx, old_state, old_disasters)
+            
+            # 打印调试信息
+            if self.current_time_step % 10 == 0 and rescuer_idx == 0:
+                print(f"[调试] 使用 RescueEnvironment 计算奖励: {reward:.4f}, 奖励明细: {reward_info}")
+                # 打印TIME_PENALTY值
+                if hasattr(temp_env, "TIME_PENALTY"):
+                    print(f"[调试] RescueEnvironment.TIME_PENALTY = {temp_env.TIME_PENALTY}")
+        except Exception as e:
+            print(f"[错误] 使用 RescueEnvironment 计算奖励时出错: {e}")
+            # 发生错误时，使用默认奖励
+            reward = -0.01
+            reward_info = {"time_penalty": -0.01}
+        
+        # 确定成功标志和响应时间
         success = False
         response_time = 0
         
-        # 如果有目标且目标是灾情点且灾情已解决或减轻
+        # 如果有目标且目标是灾情点且灾情已解决或减轻，则计算响应时间
         if "target" in self.rescuers[rescuer_idx]:
             target = self.rescuers[rescuer_idx]["target"]
             if target in old_disasters and target in self.disasters:
                 old_disaster = old_disasters[target]
                 current_disaster = self.disasters[target]
                 
-                # 奖励与灾情等级成正比
-                reward += current_disaster["level"] / 10.0
-                
                 # 如果救援取得了进展
                 if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
-                    progress = old_disaster["rescue_needed"] - current_disaster["rescue_needed"]
-                    reward += progress
                     success = True
                     
                     # 计算响应时间 - 使用时间步而不是实际时间
@@ -286,10 +298,6 @@ class Environment:
                         if response_time <= 0:
                             print(f"警告：检测到负响应时间，current_time_step={self.current_time_step}, disaster_time_step={current_disaster['time_step']}")
                             response_time = 1  # 确保至少为1
-                
-                # 如果灾情已解决
-                if current_disaster["rescue_needed"] <= 0:
-                    reward += 10.0
         
         # 获取新状态
         next_state = self.get_state_for_rescuer(rescuer_idx)

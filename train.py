@@ -593,12 +593,12 @@ def main():
     print(f"  • 最大灾难等级: {Colors.CYAN}{config.get_config_param('max_disaster_level')}{Colors.ENDC}")
     
     # 打印奖励设置
-    print(f"\n{Colors.BLUE}奖励设置:{Colors.ENDC}")
-    print(f"  • 完成救援: {Colors.GREEN}+10.0{Colors.ENDC}")
-    print(f"  • 高优先级任务: {Colors.GREEN}+任务等级/10{Colors.ENDC}")
-    print(f"  • 协调避免重复: {Colors.GREEN}+2.0{Colors.ENDC}")
-    print(f"  • 救援进度: {Colors.GREEN}+等级减少值{Colors.ENDC}")
-    print(f"  • 时间惩罚: {Colors.RED}-0.1/步{Colors.ENDC}")
+    print(f"\n{Colors.BLUE}奖励设置 (可在src/rl/marl_rescue.py中调整):{Colors.ENDC}")
+    print(f"  • 完成救援 (COMPLETION_REWARD): {Colors.GREEN}+10.0{Colors.ENDC}")
+    print(f"  • 高优先级任务 (PRIORITY_FACTOR): {Colors.GREEN}+任务等级*0.1{Colors.ENDC}")
+    print(f"  • 协调避免重复 (COORDINATION_REWARD): {Colors.GREEN}+2.0{Colors.ENDC}")
+    print(f"  • 救援进度 (PROGRESS_FACTOR): {Colors.GREEN}+进度*1.0{Colors.ENDC}")
+    print(f"  • 时间惩罚 (TIME_PENALTY): {Colors.RED}-0.01/步{Colors.ENDC}")
     print(f"{Colors.HEADER}{Colors.BOLD}================================{Colors.ENDC}")
     
     # 初始化环境

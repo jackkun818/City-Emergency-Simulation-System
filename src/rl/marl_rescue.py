@@ -354,17 +354,30 @@ class MARLController:
             if reward_type in self.reward_tracking:
                 self.reward_tracking[reward_type].append(value)
     
-    def calculate_reward(self, rescuer_idx, rescuer, disasters):
+    def calculate_reward(self, rescuer_idx, old_state, old_disasters):
         """
         计算单个救援人员的奖励
         
         奖励设计:
-        1. 成功完成救援任务: +10
-        2. 前往高优先级灾情点: +level/10 (优先处理高风险灾情)
-        3. 与其他救援人员协调避免重复: +2 (如果该灾情点没有其他人前往)
-        4. 救援进度奖励: +progress_delta (根据救援进度增加的奖励)
-        5. 时间惩罚: -0.1 (每个时间步的轻微惩罚，鼓励快速行动)
+        1. 成功完成救援任务: +COMPLETION_REWARD
+        2. 前往高优先级灾情点: +level*PRIORITY_FACTOR (优先处理高风险灾情)
+        3. 与其他救援人员协调避免重复: +COORDINATION_REWARD (如果该灾情点没有其他人前往)
+        4. 救援进度奖励: +progress*PROGRESS_FACTOR (根据救援进度增加的奖励)
+        5. 时间惩罚: -TIME_PENALTY (每个时间步的轻微惩罚，鼓励快速行动)
         """
+        # 奖励系数 - 可以在这里调整奖励大小
+        COMPLETION_REWARD = 10.0    # 完成救援奖励
+        PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
+        COORDINATION_REWARD = 2.0   # 协调奖励
+        PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
+        TIME_PENALTY = 0.1          # 时间惩罚
+        
+        # 确保rescuer_idx在有效范围内
+        if rescuer_idx >= len(self.env.rescuers):
+            return 0, {"completion_reward": 0, "priority_reward": 0, 
+                     "coordination_reward": 0, "progress_reward": 0, "time_penalty": 0}
+            
+        rescuer = self.env.rescuers[rescuer_idx]
         reward = 0
         
         # 初始化奖励明细
@@ -373,7 +386,7 @@ class MARLController:
             "priority_reward": 0.0,
             "coordination_reward": 0.0,
             "progress_reward": 0.0,
-            "time_penalty": -0.1  # 基础时间惩罚
+            "time_penalty": -TIME_PENALTY  # 基础时间惩罚
         }
         
         # 累加时间惩罚
@@ -384,56 +397,39 @@ class MARLController:
             target = rescuer["target"]
             
             # 如果目标是有效的灾情点
-            if target in disasters:
-                disaster = disasters[target]
+            if target in self.env.disasters:
+                current_disaster = self.env.disasters[target]
+                old_disaster = old_disasters.get(target, None)
                 
                 # 奖励1: 根据灾情等级给予奖励
-                priority_reward = disaster["level"] / 10.0
+                priority_reward = current_disaster["level"] * PRIORITY_FACTOR
                 reward_info["priority_reward"] = priority_reward
                 reward += priority_reward
                 
-                # 奖励2: 如果该灾情点没有其他人前往，给予协调奖励
-                from_others = False
-                try:
-                    # 获取当前环境中的所有救援人员
-                    all_rescuers = []
-                    if hasattr(self, "_env_cache") and self._env_cache:
-                        for env in self._env_cache:
-                            if hasattr(env, "rescuers"):
-                                all_rescuers.extend(env.rescuers)
-                    
-                    # 如果没有环境缓存或无法获取救援人员信息，简化逻辑
-                    if not all_rescuers:
-                        # 简单检查当前参数中的rescuer_idx是否是唯一分配到此目标的
-                        coordination_reward = 2.0
-                        reward_info["coordination_reward"] = coordination_reward
-                        reward += coordination_reward
-                    else:
-                        # 检查是否有其他救援人员前往同一目标
-                        for other_rescuer in all_rescuers:
-                            if other_rescuer != rescuer and "target" in other_rescuer and other_rescuer["target"] == target:
-                                from_others = True
-                                break
-                        
-                        if not from_others:
-                            coordination_reward = 2.0
-                            reward_info["coordination_reward"] = coordination_reward
-                            reward += coordination_reward
-                except Exception as e:
-                    # 出错时，简化逻辑
-                    coordination_reward = 2.0
+                # 奖励2: 协调奖励 - 检查是否有其他救援人员前往同一目标
+                other_targeting = False
+                for i, other_rescuer in enumerate(self.env.rescuers):
+                    if i != rescuer_idx and "target" in other_rescuer and other_rescuer["target"] == target:
+                        other_targeting = True
+                        break
+                
+                if not other_targeting:
+                    coordination_reward = COORDINATION_REWARD
                     reward_info["coordination_reward"] = coordination_reward
                     reward += coordination_reward
                 
-                # 奖励3: 如果灾情等级降低，给予进度奖励
-                if "previous_level" in disaster and disaster["level"] < disaster["previous_level"]:
-                    progress_reward = disaster["previous_level"] - disaster["level"]
-                    reward_info["progress_reward"] = progress_reward
-                    reward += progress_reward
+                # 奖励3: 根据救援进度奖励
+                if old_disaster:
+                    # 如果旧灾情存在，计算救援进度奖励
+                    if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
+                        progress = old_disaster["rescue_needed"] - current_disaster["rescue_needed"]
+                        progress_reward = progress * PROGRESS_FACTOR
+                        reward_info["progress_reward"] = progress_reward
+                        reward += progress_reward
                 
                 # 奖励4: 如果灾情已解决，给予大奖励
-                if disaster["rescue_needed"] <= 0:
-                    completion_reward = 10.0
+                if current_disaster["rescue_needed"] <= 0:
+                    completion_reward = COMPLETION_REWARD
                     reward_info["completion_reward"] = completion_reward
                     reward += completion_reward
         
@@ -609,12 +605,19 @@ class RescueEnvironment:
         计算单个救援人员的奖励
         
         奖励设计:
-        1. 成功完成救援任务: +10
-        2. 前往高优先级灾情点: +level/10 (优先处理高风险灾情)
-        3. 与其他救援人员协调避免重复: +2 (如果该灾情点没有其他人前往)
-        4. 救援进度奖励: +progress_delta (根据救援进度增加的奖励)
-        5. 时间惩罚: -0.1 (每个时间步的轻微惩罚，鼓励快速行动)
+        1. 成功完成救援任务: +COMPLETION_REWARD
+        2. 前往高优先级灾情点: +level*PRIORITY_FACTOR (优先处理高风险灾情)
+        3. 与其他救援人员协调避免重复: +COORDINATION_REWARD (如果该灾情点没有其他人前往)
+        4. 救援进度奖励: +progress*PROGRESS_FACTOR (根据救援进度增加的奖励)
+        5. 时间惩罚: -TIME_PENALTY (每个时间步的轻微惩罚，鼓励快速行动)
         """
+        # 奖励系数 - 可以在这里调整奖励大小
+        COMPLETION_REWARD = 10.0    # 完成救援奖励
+        PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
+        COORDINATION_REWARD = 2.0   # 协调奖励
+        PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
+        TIME_PENALTY = 0.1         # 时间惩罚
+        
         # 确保rescuer_idx在有效范围内
         if rescuer_idx >= len(self.env.rescuers):
             return 0, {"completion_reward": 0, "priority_reward": 0, 
@@ -629,7 +632,7 @@ class RescueEnvironment:
             "priority_reward": 0.0,
             "coordination_reward": 0.0,
             "progress_reward": 0.0,
-            "time_penalty": -0.1  # 基础时间惩罚
+            "time_penalty": -TIME_PENALTY  # 基础时间惩罚
         }
         
         # 累加时间惩罚
@@ -645,7 +648,7 @@ class RescueEnvironment:
                 old_disaster = old_disasters.get(target, None)
                 
                 # 奖励1: 根据灾情等级给予奖励
-                priority_reward = current_disaster["level"] / 10.0
+                priority_reward = current_disaster["level"] * PRIORITY_FACTOR
                 reward_info["priority_reward"] = priority_reward
                 reward += priority_reward
                 
@@ -657,7 +660,7 @@ class RescueEnvironment:
                         break
                 
                 if not other_targeting:
-                    coordination_reward = 2.0
+                    coordination_reward = COORDINATION_REWARD
                     reward_info["coordination_reward"] = coordination_reward
                     reward += coordination_reward
                 
@@ -666,13 +669,13 @@ class RescueEnvironment:
                     # 如果旧灾情存在，计算救援进度奖励
                     if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
                         progress = old_disaster["rescue_needed"] - current_disaster["rescue_needed"]
-                        progress_reward = progress
+                        progress_reward = progress * PROGRESS_FACTOR
                         reward_info["progress_reward"] = progress_reward
                         reward += progress_reward
                 
                 # 奖励4: 如果灾情已解决，给予大奖励
                 if current_disaster["rescue_needed"] <= 0:
-                    completion_reward = 10.0
+                    completion_reward = COMPLETION_REWARD
                     reward_info["completion_reward"] = completion_reward
                     reward += completion_reward
         

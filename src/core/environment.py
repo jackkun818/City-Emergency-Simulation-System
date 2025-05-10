@@ -37,7 +37,7 @@ class Environment:
         for i in range(self.num_rescuers):
             # 随机生成每个救援人员的能力和速度
             capacity = random.randint(1, 3)  # 救援能力在1到3之间
-            speed = random.randint(1, 3)  # 移动速度在1到3之间
+            speed = random.randint(1, 3)  # 移动速度在1到3之间默认系统时间生成的
 
             self.rescuers.append({
                 "id": i,
@@ -177,7 +177,7 @@ class Environment:
         """
         # 这里我们需要导入MARLController来构建状态
         try:
-            from rl.marl_rescue import MARLController
+            from src.rl.marl_rescue import MARLController
             
             # 创建一个临时的MARLController以获取状态表示
             controller = MARLController(
@@ -205,7 +205,7 @@ class Environment:
                 break
         
         # 检查是否达到最大时间步
-        from core import config
+        from src.core import config
         time_limit_reached = self.current_time_step >= config.SIMULATION_TIME - 1
         
         return all_resolved or time_limit_reached
@@ -253,12 +253,12 @@ class Environment:
                     del self.rescuers[rescuer_idx]["target"]
         
         # 执行救援
-        from core.rescue_execution import execute_rescue
+        from src.core.rescue_execution import execute_rescue
         execute_rescue(self.rescuers, self.disasters, self.GRID_SIZE, current_time_step=self.current_time_step)
         
         # 强制使用RescueEnvironment的奖励计算方法
         try:
-            from rl.marl_rescue import RescueEnvironment
+            from src.rl.marl_rescue import RescueEnvironment
             
             # 创建一个临时环境对象用于奖励计算
             temp_env = RescueEnvironment(self)

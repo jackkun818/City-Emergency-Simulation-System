@@ -6,39 +6,33 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 # 导入核心模块
-from core.environment import Environment
-from core import config
-from core.rescue_execution import execute_rescue
+from src.core.environment import Environment
+from src.core import config
+from src.core.rescue_execution import execute_rescue
 
 # 导入RL模块
-from rl.marl_integration import dispatch_rescue_tasks, get_algorithm_name
+from src.rl.marl_integration import dispatch_rescue_tasks, get_algorithm_name
 
 # 导入工具和可视化模块
-from utils.stats import (
+from src.utils.stats import (
     calculate_rescue_success_rate,
     calculate_average_response_time,
     calculate_resource_utilization,
     verify_rescue_stats,
     show_disaster_distribution
 )
-from visualization.visualization import visualize
+from src.visualization.visualization import visualize
 
 import copy
 
 
 def select_disaster_scale():
-    """
-    选择灾难规模并显示当前配置
-    
-    现在直接使用config.py中的配置，不再需要用户输入
+    #现在直接使用config.py中的配置，不再需要用户输入
     """
     # 显示当前灾难规模的信息
-    if config.DISASTER_SCALE in config.DISASTER_PRESETS:
-        preset = config.DISASTER_PRESETS[config.DISASTER_SCALE]
-        print(f"使用{preset['name']} - 网格大小({preset['grid_size']}x{preset['grid_size']}), "
-              f"灾情生成概率({preset['disaster_spawn_rate']}), 衰减步数{preset['spawn_rate_decay_steps']}")  
-    else:
-        print(f"警告：未知的灾难规模设置：{config.DISASTER_SCALE}")
+    if config.DISASTER_SCALE in config.DISAS
+    """
+
     
     print(f"救援人员数量: {config.NUM_RESCUERS}")
     print(f"任务分配算法: {config.TASK_ALLOCATION_ALGORITHM} ({get_algorithm_name()})")

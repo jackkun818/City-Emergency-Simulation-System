@@ -6,7 +6,7 @@ import numpy as np
 import random
 from collections import deque
 import os
-from core import config
+from src.core import config
 
 class RescuerAgent(nn.Module):
     """单个救援人员的智能体模型"""
@@ -507,7 +507,7 @@ class RescueEnvironment:
         """获取指定救援人员的状态"""
         if not hasattr(self, 'marl_controller') or self.marl_controller is None:
             # 如果没有MARL控制器实例，创建一个临时的
-            from rl.marl_rescue import MARLController
+            from src.rl.marl_rescue import MARLController
             self.marl_controller = MARLController(
                 grid_size=self.grid_size,
                 num_rescuers=self.num_rescuers
@@ -553,7 +553,7 @@ class RescueEnvironment:
                     del self.env.rescuers[rescuer_idx]["target"]
         
         # 执行救援
-        from core.rescue_execution import execute_rescue
+        from src.core.rescue_execution import execute_rescue
         execute_rescue(self.env.rescuers, self.env.disasters, self.env.GRID_SIZE, current_time_step=self.current_time_step)
         
         # 计算奖励
@@ -739,7 +739,7 @@ def train_marl(env, num_episodes=100, max_steps=config.SIMULATION_TIME):
                 break
         
         # 计算本轮训练的统计数据
-        from utils.stats import calculate_rescue_success_rate, calculate_average_response_time
+        from src.utils.stats import calculate_rescue_success_rate, calculate_average_response_time
         
         success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE)
         avg_response_time = calculate_average_response_time(env.disasters)
@@ -814,7 +814,7 @@ def evaluate_marl(env, episodes=5, max_steps=config.SIMULATION_TIME):
                 break
         
         # 计算本轮评估的统计数据
-        from utils.stats import calculate_rescue_success_rate, calculate_average_response_time
+        from src.utils.stats import calculate_rescue_success_rate, calculate_average_response_time
         
         success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE)
         avg_response_time = calculate_average_response_time(env.disasters)

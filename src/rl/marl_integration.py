@@ -1,4 +1,4 @@
-from core import config
+from src.core import config
 from .marl_rescue import MARLController
 import os
 
@@ -85,7 +85,7 @@ def hybrid_marl_rescue_dispatch(rescuers, disasters, grid_size, current_time_ste
     - grid_size: 网格大小
     - current_time_step: 当前时间步
     """
-    from core.rescue_dispatch import hybrid_rescue_dispatch
+    from src.core.rescue_dispatch import hybrid_rescue_dispatch
     
     # 将救援人员分为两组
     num_rescuers = len(rescuers)
@@ -127,7 +127,7 @@ def dispatch_rescue_tasks(rescuers, disasters, grid_size, current_time_step=0):
     
     if algorithm == 0:
         # 使用传统混合算法
-        from core.rescue_dispatch import hybrid_rescue_dispatch
+        from src.core.rescue_dispatch import hybrid_rescue_dispatch
         hybrid_rescue_dispatch(rescuers, disasters, grid_size)
     elif algorithm == 1:
         # 使用多智能体强化学习
@@ -137,5 +137,5 @@ def dispatch_rescue_tasks(rescuers, disasters, grid_size, current_time_step=0):
         hybrid_marl_rescue_dispatch(rescuers, disasters, grid_size, current_time_step)
     else:
         # 默认使用传统混合算法
-        from core.rescue_dispatch import hybrid_rescue_dispatch
+        from src.core.rescue_dispatch import hybrid_rescue_dispatch
         hybrid_rescue_dispatch(rescuers, disasters, grid_size) 

@@ -10,13 +10,18 @@ matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', '
 matplotlib.rcParams['axes.unicode_minus'] = False
 import time  # 用于控制动画帧率
 
-def visualize(env_snapshots, progress_data=None):
+def visualize(env_snapshots, progress_data=None, embedded_mode=False):
     """
     Enhanced Visualization:
     - 🚑 Display A* planned rescue paths
     - 🔴 Disaster points (severe) → 🟡 Disaster points (reduced) → 🟢 Rescue completed
     - 📊 Task progress bar
     - 📈 Rescue success rate curve
+    
+    Parameters:
+    - env_snapshots: List of environment snapshots or a single snapshot
+    - progress_data: List of (time_step, success_rate) tuples for plotting progress
+    - embedded_mode: When True, returns the figure object instead of showing it (for Tkinter embedding)
     """
     
     # 如果只有一个环境状态（向后兼容）
@@ -319,4 +324,9 @@ def visualize(env_snapshots, progress_data=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.15)
     
-    plt.show()  # Display figure
+    # 根据嵌入模式决定是显示还是返回图形对象
+    if embedded_mode:
+        return fig
+    else:
+        plt.show()  # Display figure
+        return fig  # 同时返回图形对象，以便于后续使用

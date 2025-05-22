@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use('TkAgg')  # Set Matplotlib backend
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.backend_bases import key_press_handler  # 导入key_press_handler函数
+from matplotlib.backend_bases import key_press_handler
 import numpy as np
 import sys
 import re
@@ -25,7 +25,7 @@ project_root = os.path.abspath(os.path.join(current_dir, '../..'))
 sys.path.append(project_root)
 
 # Import visualization module
-from .visualization import visualize
+from src.visualization import visualize
 
 # Set save directory
 SAVE_DIR = os.path.join(project_root, 'train_visualization_save')
@@ -36,28 +36,19 @@ DEFAULT_DATA_DIR = os.path.join(SAVE_DIR, 'metadata')
 class TrainingDataBrowser:
     def __init__(self, root, data_dir=DEFAULT_DATA_DIR):
         self.root = root
-        self.root.title("Training Data Visualization Browser")
-        self.root.geometry("1200x800")
         self.data_dir = data_dir
+        self.selected_file = None
+        self.current_fig = None
+        self.current_canvas = None
+        self.update_timer_id = None
         
-        # Create main interface
+        # Set window title
+        self.root.title("Training Data Visualization Browser")
+        
+        # Setup UI
         self.setup_ui()
         
-        # Check if data directory exists
-        if not os.path.exists(self.data_dir):
-            # Create data directory
-            parent_dir = os.path.dirname(self.data_dir)
-            if os.path.exists(parent_dir):
-                os.makedirs(self.data_dir, exist_ok=True)
-                self.status_label.config(text=f"Created data directory: {self.data_dir}")
-            else:
-                # If the parent directory doesn't exist, prompt the user to select a valid directory
-                self.status_label.config(text="Default data directory doesn't exist. Please select a valid directory.")
-                # Delay call to choose_data_dir to ensure UI is fully loaded
-                self.root.after(100, self.choose_data_dir)
-                return
-        
-        # Load metadata file list
+        # Load metadata files
         self.load_metadata_files()
     
     def setup_ui(self):
@@ -158,37 +149,6 @@ class TrainingDataBrowser:
         # Bind tab selection event
         self.viz_notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
     
-    def on_tab_changed(self, event):
-        """Handle tab selection event"""
-        if not hasattr(self, 'selected_file'):
-            return
-            
-        selected_tab = self.viz_notebook.select()
-        tab_index = self.viz_notebook.index(selected_tab)
-        
-        # 根据标签页索引执行相应操作
-        try:
-            # 基本信息标签页
-            if tab_index == 0:
-                self.show_basic_info(self.selected_file)
-            
-            # 训练指标标签页
-            elif tab_index == 1:
-                with open(self.selected_file, 'r') as f:
-                    data = json.load(f)
-                metrics = data.get('metrics', {})
-                if metrics:
-                    self.plot_metrics(metrics)
-            
-            # 环境可视化标签页
-            elif tab_index == 2:
-                # 避免重复加载，如果可视化区域已经有内容，不重新加载
-                if len(self.env_frame.winfo_children()) == 0:
-                    self.visualize_selected()
-        except Exception as e:
-            # 捕获错误并显示在状态栏，但不中断
-            self.status_label.config(text=f"Error when switching tabs: {str(e)}")
-    
     def setup_control_bar(self):
         """Set up bottom control bar"""
         self.control_frame = ttk.Frame(self.root)
@@ -270,46 +230,36 @@ class TrainingDataBrowser:
             self.load_metadata_files()
     
     def on_file_select(self, event):
-        """File selection event handler"""
-        selected_items = self.file_tree.selection()
-        
-        if not selected_items:
-            self.visualize_btn.config(state=tk.DISABLED)
-            return
-        
-        # Enable visualization button
-        self.visualize_btn.config(state=tk.NORMAL)
-        
-        # Get selected file name
-        item = selected_items[0]
-        file_tag = self.file_tree.item(item, "tags")[0]
-        
-        # Store selected file path
-        self.selected_file = os.path.join(self.data_dir, file_tag)
-        
-        # Show basic information
-        self.show_basic_info(self.selected_file)
-        
-        # Load and plot metrics
-        with open(self.selected_file, 'r') as f:
-            data = json.load(f)
-        
-        metrics = data.get('metrics', {})
-        if metrics:
-            self.plot_metrics(metrics)
+        """Handle file selection"""
+        selection = self.file_tree.selection()
+        if selection:
+            # Get selected file
+            item = selection[0]
+            file = self.file_tree.item(item)['tags'][0]
+            self.selected_file = os.path.join(self.data_dir, file)
+            
+            # Enable visualization button
+            self.visualize_btn.config(state=tk.NORMAL)
             self.export_btn.config(state=tk.NORMAL)
-        else:
-            self.export_btn.config(state=tk.DISABLED)
+            
+            # Show basic info
+            self.show_basic_info(self.selected_file)
+            
+            # Plot metrics
+            with open(self.selected_file, 'r') as f:
+                data = json.load(f)
+            self.plot_metrics(data.get('metrics', {}))
+    
+    def on_tab_changed(self, event):
+        """Handle tab change"""
+        # Get current tab
+        current_tab = self.viz_notebook.select()
+        tab_name = self.viz_notebook.tab(current_tab, "text")
         
-        # 立即尝试加载环境可视化
-        try:
-            self.visualize_selected()
-        except Exception as e:
-            # 只记录错误，不中断
-            self.status_label.config(text=f"Error loading visualization: {str(e)}")
-        
-        # Update status
-        self.status_label.config(text=f"Selected file: {file_tag}")
+        if tab_name == "Environment Visualization":
+            # Only trigger visualization if a file is actually selected
+            if getattr(self, 'selected_file', None):
+                self.visualize_selected()
     
     def show_basic_info(self, file_path):
         """Show basic information of selected file"""
@@ -348,28 +298,16 @@ class TrainingDataBrowser:
             
             # Final metrics
             self.info_text.insert(tk.END, "Final Metrics:\n")
-            if 'rewards' in metrics and metrics['rewards']:
-                self.info_text.insert(tk.END, f"• Final Reward: {metrics['rewards'][-1]:.4f}\n")
-            if 'success_rates' in metrics and metrics['success_rates']:
-                self.info_text.insert(tk.END, f"• Final Success Rate: {metrics['success_rates'][-1]:.4f}\n")
-            if 'response_times' in metrics and metrics['response_times']:
-                self.info_text.insert(tk.END, f"• Final Response Time: {metrics['response_times'][-1]:.4f}\n")
-            if 'losses' in metrics and metrics['losses']:
-                self.info_text.insert(tk.END, f"• Final Loss: {metrics['losses'][-1]:.4f}\n")
+            if metrics:
+                self.info_text.insert(tk.END, f"• Final Success Rate: {metrics.get('success_rates', [0])[-1]:.2f}\n")
+                self.info_text.insert(tk.END, f"• Final Average Reward: {metrics.get('rewards', [0])[-1]:.2f}\n")
+                self.info_text.insert(tk.END, f"• Final Average Response Time: {metrics.get('response_times', [0])[-1]:.2f}\n")
             
         except Exception as e:
             self.info_text.insert(tk.END, f"Error loading file: {str(e)}")
     
     def plot_metrics(self, metrics):
-        """
-        Plot training metrics
-        
-        The training metrics include:
-        - Rewards: Average reward per episode, indicates overall agent performance
-        - Success Rates: Percentage of successful rescues, key indicator of effectiveness
-        - Response Times: Average time taken to respond to disasters, lower is better
-        - Losses: Training loss values, indicates model convergence
-        """
+        """Plot training metrics"""
         # Clear previous plots
         for widget in self.metrics_frame.winfo_children():
             widget.destroy()
@@ -466,7 +404,6 @@ class TrainingDataBrowser:
 
         try:
             # 清除环境可视化标签页中的所有部件，确保先停止所有定时器
-            # 记录当前的after ID，以便清除
             if hasattr(self, 'update_timer_id') and self.update_timer_id:
                 self.root.after_cancel(self.update_timer_id)
                 self.update_timer_id = None
@@ -556,15 +493,20 @@ class TrainingDataBrowser:
             # 确保按时间步排序
             metadata_entries.sort(key=lambda x: x.get('time_step', 0))
             
-            # 使用环境的copy方法为每个时间步创建独立的环境对象
-            if hasattr(env, 'copy'):
-                for entry in metadata_entries:
-                    # 创建一个环境的深拷贝
-                    env_copy = env.copy()
-                    
-                    # 添加额外的元数据
+            # 加载每个step的环境快照
+            for entry in metadata_entries:
+                step_num = entry.get('step', 0)
+                snapshot_file = os.path.join(snapshot_dir, f"step_{step_num:04d}.pkl")
+                
+                try:
+                    with open(snapshot_file, 'rb') as f:
+                        snapshot = pickle.load(f)
+                        env_snapshots.append(snapshot)
+                except (FileNotFoundError, pickle.UnpicklingError) as e:
+                    print(f"警告：无法加载第 {step_num} 步的快照，使用元数据创建: {str(e)}")
+                    env_copy = env.copy() if hasattr(env, 'copy') else env
                     snapshot_entry = {
-                        "env": env_copy,  # 使用环境的独立副本
+                        "env": env_copy,
                         "time_step": entry.get('time_step', 0),
                         "success_rate": entry.get('success_rate', 0),
                         "disaster_count": entry.get('disaster_count', 0),
@@ -573,32 +515,19 @@ class TrainingDataBrowser:
                         "avg_reward": entry.get('avg_reward', 0),
                         "avg_response_time": entry.get('avg_response_time', 0),
                         "episode": episode_num,
-                        "step": entry.get('step', 0)
-                    }
-                    env_snapshots.append(snapshot_entry)
-            else:
-                # 如果环境没有copy方法，则使用相同的环境对象
-                self.status_label.config(text="警告：环境对象不支持复制，可能导致时间步动画效果受限")
-                for entry in metadata_entries:
-                    # 使用相同的环境对象，但包含不同的元数据
-                    snapshot_entry = {
-                        "env": env,
-                        "time_step": entry.get('time_step', 0),
-                        "success_rate": entry.get('success_rate', 0),
-                        "disaster_count": entry.get('disaster_count', 0),
-                        "success_count": entry.get('success_count', 0),
-                        "total_reward": entry.get('total_reward', 0), 
-                        "avg_reward": entry.get('avg_reward', 0),
-                        "avg_response_time": entry.get('avg_response_time', 0),
-                        "episode": episode_num,
-                        "step": entry.get('step', 0)
+                        "step": step_num
                     }
                     env_snapshots.append(snapshot_entry)
             
             # 确保至少有一个快照
             if not env_snapshots:
-                # 使用最终快照作为唯一元素
                 env_snapshots = [final_snapshot]
+            
+            # 确保快照按时间步排序
+            env_snapshots.sort(key=lambda x: x.get('time_step', 0))
+            
+            # 更新状态标签
+            self.status_label.config(text=f"已加载 {len(env_snapshots)} 个时间步的完全交互式可视化")
             
             # 处理警告
             import warnings
@@ -709,53 +638,35 @@ class TrainingDataBrowser:
                 except:
                     pass
             
-            # 确保鼠标事件可以被正确处理
-            canvas.get_tk_widget().focus_set()
-            
-            # 创建一个存储所有事件ID的列表以便清理
-            self.event_ids = [cid_motion, cid_key, cid_button]
-            
-            # 确保窗口关闭时进行清理
+            # 当标签页改变或应用关闭时清理资源
             def on_window_close():
-                """处理窗口关闭时的清理工作"""
-                # 断开所有事件连接
-                if hasattr(self, 'event_ids'):
-                    for cid in self.event_ids:
-                        try:
-                            canvas.mpl_disconnect(cid)
-                        except:
-                            pass
-                
-                # 停止所有可能的动画
-                if hasattr(fig, 'canvas') and fig.canvas:
-                    try:
-                        for a in fig.canvas.figure.animations:
-                            try:
-                                a.event_source.stop()
-                            except:
-                                pass
-                    except:
-                        pass
-                
-                # 释放图形资源
+                """清理所有资源"""
                 try:
-                    plt.close(fig)
-                except:
-                    pass
-                
-                # 清除定时任务
-                if hasattr(self, 'update_timer_id') and self.update_timer_id:
-                    try:
+                    # 停止所有定时器
+                    if hasattr(self, 'update_timer_id') and self.update_timer_id:
                         self.root.after_cancel(self.update_timer_id)
                         self.update_timer_id = None
-                    except:
-                        pass
-                
-                # 请求垃圾回收
-                gc.collect()
+                    
+                    # 关闭所有matplotlib图表
+                    plt.close('all')
+                    
+                    # 清理画布
+                    if hasattr(self, 'current_canvas') and self.current_canvas:
+                        self.current_canvas.get_tk_widget().destroy()
+                        self.current_canvas = None
+                    
+                    # 清理图形对象
+                    if hasattr(self, 'current_fig') and self.current_fig:
+                        self.current_fig = None
+                    
+                    # 清理环境框架中的所有部件
+                    for widget in self.env_frame.winfo_children():
+                        widget.destroy()
+                except:
+                    pass
             
-            # 设置新的关闭处理协议
-            self.root.protocol("WM_DELETE_WINDOW", on_window_close)
+            # 绑定标签页改变事件
+            self.viz_notebook.bind("<<NotebookTabChanged>>", lambda e: on_window_close() if self.viz_notebook.select() != self.env_tab else None)
             
             # 当标签页改变或应用关闭时清理资源
             def on_cleanup():
@@ -875,18 +786,11 @@ class TrainingDataBrowser:
         except Exception as e:
             raise Exception(f"Error exporting figures: {str(e)}")
 
-
 def main():
-    """Main function to start the application"""
-    try:
-        root = tk.Tk()
-        app = TrainingDataBrowser(root)
-        root.mainloop()
-    except Exception as e:
-        import traceback
-        print(f"Error: {str(e)}")
-        traceback.print_exc()
-
+    """Start the visualization browser"""
+    root = tk.Tk()
+    app = TrainingDataBrowser(root)
+    root.mainloop()
 
 if __name__ == "__main__":
     main() 

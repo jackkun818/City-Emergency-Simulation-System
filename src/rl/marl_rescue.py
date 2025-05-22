@@ -7,6 +7,28 @@ import random
 from collections import deque
 import os
 from src.core import config
+from src.core.environment import Environment
+import io
+import contextlib
+import copy
+import json
+import pickle
+import time
+
+SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../train_visualization_save')
+
+class Colors:
+    HEADER = '\033[95m'     # 粉色
+    BLUE = '\033[94m'       # 蓝色
+    CYAN = '\033[96m'       # 青色
+    GREEN = '\033[92m'      # 绿色
+    YELLOW = '\033[93m'     # 黄色
+    RED = '\033[91m'        # 红色
+    ENDC = '\033[0m'        # 结束颜色
+    BOLD = '\033[1m'        # 粗体
+    UNDERLINE = '\033[4m'   # 下划线
+
+
 
 class RescuerAgent(nn.Module):
     """单个救援人员的智能体模型"""
@@ -530,75 +552,286 @@ class RescueEnvironment:
         
         return all_resolved or time_limit_reached
     
-    def step(self, rescuer_idx, action):
-        """执行指定救援人员的动作并返回结果"""
-        # 记录旧状态和当前灾情信息以计算奖励
-        old_state = self.env.rescuers[rescuer_idx].copy() if rescuer_idx < len(self.env.rescuers) else {}
-        old_disasters = {pos: disaster.copy() for pos, disaster in self.env.disasters.items()}
+    def step(self, env, controller, num_episodes, max_steps, with_verbose=False, save_freq=10):
+        #自定义训练循环，用于MARL训练
+    
+        print("开始MARL训练过程...")
+        print("-------------------------------------------")
+        print("训练分为三个阶段：")
+        print(" - 阶段1：灾难初期，生成概率约0.5，维持20-50个灾难点（少于20个自动补充到20个，多于50个自动减少到50个）")
+        print(" - 阶段2：灾难中期，生成概率约0.3，维持5-20个灾难点（少于5个自动补充到5个，多于20个自动减少到20个）")
+        print(" - 阶段3：灾难后期，生成概率约0.1，维持1-5个灾难点（少于1个自动补充到1个，多于5个自动减少到5个）")
+        print("-------------------------------------------")
         
-        # 将动作转换为目标位置
-        target_pos = None
-        if action > 0:  # 非0动作表示前往某个位置
-            action_idx = action - 1
-            x = action_idx // self.grid_size
-            y = action_idx % self.grid_size
-            target_pos = (x, y)
+        # 存储每个回合的奖励，用于计算平均奖励
+        all_rewards = []
+        success_rates = []
+        response_times = []
+        losses = []  # 添加损失追踪
+        
+        # 新增：用于高级可视化的环境快照列表
+        env_snapshots = []
+        
+        # 开始训练
+        for episode in range(num_episodes):
+            total_reward = 0
+            success_count = 0
+            total_response_time = 0
+            disaster_count = 0
+            episode_loss = 0  # 记录本回合的平均损失
             
-            # 如果目标位置有灾情，则分配任务
-            if target_pos in self.env.disasters:
-                self.env.rescuers[rescuer_idx]["target"] = target_pos
-            else:
-                # 如果目标位置没有灾情，则清除当前任务
-                if "target" in self.env.rescuers[rescuer_idx]:
-                    del self.env.rescuers[rescuer_idx]["target"]
-        
-        # 执行救援
-        from src.core.rescue_execution import execute_rescue
-        execute_rescue(self.env.rescuers, self.env.disasters, self.env.GRID_SIZE, current_time_step=self.current_time_step)
-        
-        # 计算奖励
-        reward, reward_info = self.calculate_reward(rescuer_idx, old_state, old_disasters)
-        
-        # 获取新状态
-        next_state = self.get_state_for_rescuer(rescuer_idx)
-        
-        # 检查是否结束
-        done = self.is_episode_done()
-        
-        # 构建信息字典
-        info = {
-            "success": False,
-            "response_time": 0
-        }
-        
-        # 如果有目标且目标是灾情点且灾情已解决，则表示成功
-        if "target" in self.env.rescuers[rescuer_idx]:
-            target = self.env.rescuers[rescuer_idx]["target"]
-            if target in old_disasters and target in self.env.disasters:
-                old_disaster = old_disasters[target]
-                current_disaster = self.env.disasters[target]
+            # 重置环境 - 创建新的环境实例而不是调用reset方法
+            if episode > 0:  # 只有在第二轮开始时才需要重置，因为第一轮已经有初始环境
+                env = Environment(verbose=False)  # 使用无输出版本
+                # 更新环境缓存
+                if hasattr(controller, "_env_cache"):
+                    controller._env_cache = [env]
+            
+            # 调整探索率
+            epsilon_progress = min(1.0, episode / (0.8 * num_episodes))
+            epsilon_start = controller.epsilon_start  # 使用控制器的epsilon_start
+            epsilon_end = controller.epsilon_end  # 使用控制器的epsilon_end
+            epsilon = max(epsilon_end, epsilon_start - epsilon_progress * (epsilon_start - epsilon_end))
+            controller.epsilon = epsilon
+            
+            # 每步保存环境快照，但不立即可视化
+            for step in range(max_steps):
+                if with_verbose:
+                    print(f"  步骤 {step+1}/{max_steps}...")
                 
-                # 如果灾情解决或减轻
-                if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
-                    info["success"] = True
-                    # 计算响应时间 - 使用time_step而不是start_time
-                    if "time_step" in current_disaster:
-                        response_time = self.current_time_step - current_disaster["time_step"]
-                        # 确保响应时间为正数
-                        if response_time <= 0:
-                            print(f"警告：检测到负响应时间，current_time_step={self.current_time_step}, disaster_time_step={current_disaster['time_step']}")
-                            response_time = 1  # 确保至少为1
-                        info["response_time"] = response_time
-                    # 如果找不到time_step，则使用一个合理的默认值
+                # 获取每步开始时的灾难点数量（用于日志）
+                pre_adjust_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+                    
+                # 调整灾难设置（不再使用详细输出）
+                adjust_disaster_settings(env, step, max_steps, verbose=False)
+                
+                # 获取调整后的灾难点数量（用于日志）
+                post_adjust_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+                
+                # 每10步输出当前灾难点数量
+                if step % 10 == 0:
+                    # 根据环境接口获取灾难点数量
+                    current_disaster_points = post_adjust_disasters
+                    
+                    # 根据环境接口统计不同等级的灾难点
+                    if hasattr(env, "disasters"):
+                        high_level = sum(1 for d in env.disasters.values() if d["level"] >= 9)
+                        medium_level = sum(1 for d in env.disasters.values() if 7 <= d["level"] < 9)
+                        low_level = sum(1 for d in env.disasters.values() if d["level"] < 7)
                     else:
-                        # 确保有一个有效的响应时间
-                        info["response_time"] = max(1, min(10, self.current_time_step))  # 使用1到10之间的合理值
-                        print(f"未找到time_step，使用默认响应时间={info['response_time']}")
+                        # 如果环境接口不兼容，则设置为0
+                        high_level = medium_level = low_level = 0
+                    
+                    # 简化输出，不再显示变化情况
+                    print(f"{Colors.CYAN}[步骤 {step}/{max_steps}] 当前灾难点: {current_disaster_points} " +
+                        f"(高风险: {Colors.RED}{high_level}{Colors.CYAN}, " +
+                        f"中风险: {Colors.YELLOW}{medium_level}{Colors.CYAN}, " +
+                        f"低风险: {Colors.GREEN}{low_level}{Colors.ENDC})")
+                
+                # 更新灾难状态（使用无调试输出模式）
+                with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+                    if hasattr(env, 'update_disasters_silent'):
+                        env.update_disasters_silent(current_time_step=env.current_time_step)
+                    else:
+                        env.update_disasters(current_time_step=env.current_time_step)
+                
+                # 增加环境的当前时间步，确保时间正确推进
+                env.current_time_step = env.current_time_step + 1 if hasattr(env, 'current_time_step') else step
+                
+                # 根据环境接口获取当前灾难点数量
+                current_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+                disaster_count = max(disaster_count, current_disasters)
+                
+                # 遍历每个救援者智能体
+                for rescuer_idx in range(config.NUM_RESCUERS):
+                    if with_verbose:
+                        print(f"    处理救援者 {rescuer_idx+1}/{config.NUM_RESCUERS}...")
+                        
+                    # 获取当前状态
+                    state = env.get_state_for_rescuer(rescuer_idx)
+                    
+                    # 选择动作
+                    action = controller.select_action(state, rescuer_idx)
+                    
+                    # 执行动作并获取奖励（使用无调试输出模式）
+                    with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+                        next_state, reward, done, info = env.step(rescuer_idx, action)
+                    
+                    # 处理奖励信息
+                    total_reward += reward
+                    if 'success' in info and info['success']:
+                        success_count += 1
+                    if 'response_time' in info and info['response_time'] > 0:  # 确保响应时间有效
+                        total_response_time += info['response_time']
+                        
+                    # 存储转换到经验回放缓冲区
+                    controller.store_transition(state, action, reward, next_state, done, rescuer_idx)
+                
+                # 更新神经网络
+                loss = controller.update_agents()
+                episode_loss += loss  # 累计损失
+                
+                # 保存环境快照 - 每一步都保存
+                env_copy = copy.deepcopy(env)
+                
+                # 计算当前步骤的成功率（临时计算用于快照记录）
+                current_success_rate = success_count / max(1, disaster_count)
+                
+                # 创建快照字典
+                snapshot = {
+                    "env": env_copy,
+                    "time_step": episode * max_steps + step,  # 计算总时间步
+                    "success_rate": current_success_rate,
+                    "episode": episode + 1,
+                    "step": step + 1
+                }
+                
+                # 添加到快照列表
+                env_snapshots.append(snapshot)
+                
+                # 如果训练过程结束，跳出循环
+                if env.is_episode_done():
+                    if with_verbose:
+                        print("回合结束条件满足，提前结束本回合")
+                    break
+            
+            # 计算平均损失 - 确保不为零
+            steps_completed = min(step + 1, max_steps)  # 使用实际完成的步数
+            avg_loss = episode_loss / steps_completed if steps_completed > 0 else 0
+            
+            # 不再对损失进行裁剪
+            losses.append(avg_loss)
+            
+            # 计算平均奖励和成功率
+            avg_reward = total_reward / config.NUM_RESCUERS if config.NUM_RESCUERS > 0 else 0
+            success_rate = success_count / max(1, disaster_count)  # 确保分母非零
+            
+            # 计算平均响应时间 - 修复计算逻辑
+            avg_response_time = total_response_time / max(1, success_count)  # 确保分母非零
+            
+            all_rewards.append(avg_reward)
+            success_rates.append(success_rate)
+            response_times.append(avg_response_time)
+            
+            # 每隔一定回合保存模型
+            if (episode + 1) % save_freq == 0:
+                controller.save_models(f"model_episode_{episode+1}")
+                print(f"[进度 {episode+1}/{num_episodes}] 已保存模型 (完成: {(episode+1)/num_episodes*100:.1f}%)")
+            
+            # 每轮输出一次综合信息 - 结合了之前分散的输出
+            print(f"[轮次 {episode+1}/{num_episodes}] 探索率: {epsilon:.4f}, 平均奖励: {avg_reward:.2f}, " +
+                f"成功率: {success_rate:.2f}, 平均响应时间: {avg_response_time:.2f}秒, 平均损失: {avg_loss:.4f}")
+            
+            # 每轮都输出本轮训练详细数据
+            print(f"\n----- 本轮训练详细数据 -----")
+            print(f"• 灾难点数量: {disaster_count}")
+            print(f"• 成功救援次数: {success_count}")
+            print(f"• 总奖励: {total_reward:.2f}")
+            print(f"• 训练步数: {steps_completed}")
+            
+            # 每10个回合输出一次最近100回合的统计信息
+            if (episode + 1) % 10 == 0 or episode == num_episodes - 1:
+                recent_rewards = all_rewards[-100:] if len(all_rewards) >= 100 else all_rewards
+                recent_success = success_rates[-100:] if len(success_rates) >= 100 else success_rates
+                recent_response = response_times[-100:] if len(response_times) >= 100 else response_times
+                recent_losses = losses[-100:] if len(losses) >= 100 else losses
+                
+                print("\n========== 最近训练统计信息 ==========")
+                print(f"最近{len(recent_rewards)}回合统计:")
+                print(f"• 平均奖励: {np.mean(recent_rewards):.2f}")
+                print(f"• 平均成功率: {np.mean(recent_success):.2f}")
+                print(f"• 平均响应时间: {np.mean(recent_response):.2f}秒")
+                print(f"• 平均损失: {np.mean(recent_losses):.4f}")
+                print(f"• 当前探索率: {epsilon:.4f}")
+                print(f"• 最高成功率: {max(recent_success) if recent_success else 0:.2f}")
+                
+                # 添加奖励分解信息（如果可用）
+                if hasattr(controller, "get_reward_stats"):
+                    reward_stats = controller.get_reward_stats(reset=False)
+                    print(f"\n奖励分解:")
+                    for reward_type, stats in reward_stats.items():
+                        if stats["total"] != 0:  # 只显示非零奖励
+                            print(f"• {reward_type}: 总计={stats['total']:.2f}, 平均={stats['avg']:.2f}")
+                
+                print("==================================\n")
+            
+            # 每轮结束时保存元数据，简化逻辑，移除可视化部分
+            print(f"\n[元数据] 正在保存第 {episode+1} 轮的训练元数据...")
+
+            # 创建元数据保存目录结构
+            metadata_dir = os.path.join(SAVE_DIR, "metadata")
+            os.makedirs(metadata_dir, exist_ok=True)
+
+            # 创建该轮的元数据文件名（确保不会覆盖）
+            episode_meta_file = os.path.join(metadata_dir, f"episode_{episode+1:04d}.json")
+
+            # 提取当前轮的快照元数据
+            episode_meta = []
+            for snapshot in env_snapshots:
+                if snapshot["episode"] == episode + 1:
+                    # 保存元数据
+                    meta = {
+                        "time_step": snapshot["time_step"],
+                        "success_rate": snapshot["success_rate"],
+                        "episode": snapshot["episode"],
+                        "step": snapshot["step"],
+                        # 添加更多状态信息
+                        "disaster_count": disaster_count,
+                        "success_count": success_count,
+                        "total_reward": total_reward,
+                        "avg_reward": avg_reward,
+                        "avg_response_time": avg_response_time
+                    }
+                    episode_meta.append(meta)
+
+            # 保存元数据（按步骤排序）
+            episode_meta.sort(key=lambda x: x["step"])
+            with open(episode_meta_file, 'w') as f:
+                json.dump({
+                    "metadata": episode_meta,
+                    "env_config": {
+                        "grid_size": env.GRID_SIZE,
+                        "num_rescuers": len(env.rescuers),
+                        "max_steps": max_steps
+                    },
+                    "metrics": {
+                        "rewards": all_rewards[:episode+1],
+                        "success_rates": success_rates[:episode+1],
+                        "response_times": response_times[:episode+1],
+                        "losses": losses[:episode+1] if losses else []
+                    }
+                }, f)
+
+            print(f"[元数据] 第 {episode+1} 轮训练元数据已保存到: {episode_meta_file}")
+
+            # 保存训练环境快照，用于后续可能的可视化
+            snapshot_dir = os.path.join(SAVE_DIR, "snapshots", f"episode_{episode+1:04d}")
+            os.makedirs(snapshot_dir, exist_ok=True)
+
+            # 保存最后一步的环境快照
+            if len(env_snapshots) > 0:
+                # 找到当前轮的最后一个快照
+                last_snapshot = None
+                for snapshot in reversed(env_snapshots):
+                    if snapshot["episode"] == episode + 1:
+                        last_snapshot = snapshot
+                        break
+                
+                if last_snapshot:
+                    # 保存仅包含必要信息的环境快照
+                    snapshot_file = os.path.join(snapshot_dir, "final_state.pkl")
+                    with open(snapshot_file, 'wb') as f:
+                        pickle.dump(last_snapshot, f)
+                    print(f"[快照] 已保存环境状态快照到: {snapshot_file}")
+
+            # 只保留最新一轮的环境快照，释放内存
+            if episode > 0:  # 第一轮之后才清理
+                # 筛选出当前轮的快照，释放之前轮的快照
+                env_snapshots = [s for s in env_snapshots if s["episode"] == episode + 1]
+                print(f"[内存] 已清理旧轮次环境快照，当前保留 {len(env_snapshots)} 个快照")
         
-        # 更新当前时间步
-        self.current_time_step += 1
-        
-        return next_state, reward, done, info
+        return all_rewards, success_rates, response_times
+
     
     def calculate_reward(self, rescuer_idx, old_state, old_disasters):
         """
@@ -616,7 +849,7 @@ class RescueEnvironment:
         PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
         COORDINATION_REWARD = 2.0   # 协调奖励
         PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
-        TIME_PENALTY = 0.1         # 时间惩罚
+        TIME_PENALTY = 0.1          # 时间惩罚
         
         # 确保rescuer_idx在有效范围内
         if rescuer_idx >= len(self.env.rescuers):
@@ -835,3 +1068,82 @@ def evaluate_marl(env, episodes=5, max_steps=config.SIMULATION_TIME):
     print(f"平均响应时间: {avg_response_time:.2f}")
     
     return avg_success_rate, avg_response_time 
+
+def _force_reduce_disasters(env, target_count, verbose=False):
+    """
+    直接强制管理灾难点数量，确保环境中的灾难点数量不超过目标值
+    """
+    if not hasattr(env, "disasters"):
+        return False
+
+    current_count = len(env.disasters)
+    if current_count <= target_count:
+        return True
+
+    to_remove = current_count - target_count
+    disaster_positions = list(env.disasters.keys())
+    positions_to_remove = random.sample(disaster_positions, to_remove)
+    removed = 0
+    for pos in positions_to_remove:
+        try:
+            del env.disasters[pos]
+            removed += 1
+        except Exception as e:
+            pass
+
+    return removed > 0
+
+def adjust_disaster_settings(env, step, max_steps, verbose=False):
+    """根据训练进度动态调整灾难设置"""
+    current_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+
+    if step < max_steps / 3:
+        env.disaster_gen_prob = 0.5 if hasattr(env, "disaster_gen_prob") else 0.5
+        min_disasters = 20
+        max_disasters = 50
+        phase = "初期阶段"
+    elif step < 2 * max_steps / 3:
+        env.disaster_gen_prob = 0.3 if hasattr(env, "disaster_gen_prob") else 0.3
+        min_disasters = 5
+        max_disasters = 20
+        phase = "中期阶段"
+    else:
+        env.disaster_gen_prob = 0.1 if hasattr(env, "disaster_gen_prob") else 0.1
+        min_disasters = 1
+        max_disasters = 5
+        phase = "后期阶段"
+
+    if verbose or step % 50 == 0:
+        print(f"\033[33m当前{phase}：灾难生成概率={env.disaster_gen_prob if hasattr(env, 'disaster_gen_prob') else 0.5:.1f}, 灾难点范围={min_disasters}-{max_disasters}个，当前有{current_disasters}个灾难点\033[0m")
+
+    if current_disasters < min_disasters and hasattr(env, "disasters"):
+        to_add = min_disasters - current_disasters
+        for _ in range(to_add):
+            grid_size = env.GRID_SIZE if hasattr(env, "GRID_SIZE") else env.grid_size if hasattr(env, "grid_size") else 10
+            max_attempts = 10
+            for _ in range(max_attempts):
+                x, y = np.random.randint(0, grid_size, size=2)
+                if (x, y) not in env.disasters:
+                    level = np.random.randint(5, 11)
+                    if level <= 6:
+                        rescue_needed = np.random.randint(5, 6)
+                    elif level <= 8:
+                        rescue_needed = np.random.randint(7, 8)
+                    else:
+                        rescue_needed = np.random.randint(9, 10)
+                    env.disasters[(x, y)] = {
+                        "level": level,
+                        "rescue_needed": rescue_needed,
+                        "start_time": time.time(),
+                        "time_step": env.current_time_step if hasattr(env, "current_time_step") else 0,
+                        "frozen_level": False,
+                        "frozen_rescue": False,
+                        "rescue_success": False,
+                        "show_red_x": 0
+                    }
+                    break
+
+    if current_disasters > max_disasters and hasattr(env, "disasters"):
+        _force_reduce_disasters(env, max_disasters, verbose=False) 
+
+step = RescueEnvironment.step 

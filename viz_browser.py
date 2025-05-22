@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 训练数据可视化浏览器启动脚本
-"""
 
+"""
 import os
 import sys
 
@@ -12,7 +12,7 @@ project_root = current_dir
 sys.path.append(project_root)
 
 def main():
-    """启动可视化浏览器"""
+    #启动可视化浏览器
     # 尝试导入可视化浏览器模块
     try:
         from src.visualization.viz_browser import main as start_browser
@@ -31,4 +31,14 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+
+
+
+
+
+
+
+
+

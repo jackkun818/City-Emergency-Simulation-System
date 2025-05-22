@@ -31,7 +31,32 @@ class Environment:
             print(f"救援人员数量: {self.num_rescuers}")
 
         self.initialize_rescuers()
-
+    
+    def copy(self):
+            """
+            创建环境的深拷贝
+            返回一个新的Environment实例，包含当前环境的所有状态
+            """
+            # 创建新的环境实例
+            new_env = Environment(grid_size=self.GRID_SIZE, num_rescuers=self.num_rescuers, verbose=False)
+            
+            # 复制救援人员信息
+            new_env.rescuers = []
+            for rescuer in self.rescuers:
+                new_rescuer = rescuer.copy()  # 创建救援人员字典的浅拷贝
+                new_env.rescuers.append(new_rescuer)
+            
+            # 复制灾情信息
+            new_env.disasters = {}
+            for pos, disaster in self.disasters.items():
+                new_disaster = disaster.copy()  # 创建灾情字典的浅拷贝
+                new_env.disasters[pos] = new_disaster
+            
+            # 复制当前时间步
+            new_env.current_time_step = self.current_time_step
+            
+            return new_env
+    
     def initialize_rescuers(self):
         """ 初始化救援人员并设置差异化的能力和速度 """
         for i in range(self.num_rescuers):
@@ -312,6 +337,7 @@ class Environment:
         }
         
         return next_state, reward, done, info
+
 
 
 if __name__ == "__main__":

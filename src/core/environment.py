@@ -11,7 +11,7 @@ NUM_RESCUERS = 3
 
 
 class Environment:
-    def __init__(self, grid_size=None, num_rescuers=None, verbose=True):
+    def __init__(self, grid_size=None, num_rescuers=None, verbose=True, rescuers_data=None):
         # 使用 config 中的参数，如果有传入参数则使用传入的参数
         self.GRID_SIZE = grid_size if grid_size is not None else config.get_config_param("grid_size")
         self.num_rescuers = num_rescuers if num_rescuers is not None else config.get_config_param("num_rescuers")
@@ -29,8 +29,15 @@ class Environment:
             
             # 打印救援人员信息（独立于灾难规模）
             print(f"救援人员数量: {self.num_rescuers}")
-
-        self.initialize_rescuers()
+        
+        # 如果提供了救援人员数据，直接使用它
+        if rescuers_data is not None:
+            self.rescuers = rescuers_data
+            self.num_rescuers = len(rescuers_data)
+            if verbose:
+                print(f"使用预定义的救援人员数据，数量: {self.num_rescuers}")
+        else:
+            self.initialize_rescuers()
 
     def initialize_rescuers(self):
         """ 初始化救援人员并设置差异化的能力和速度 """
@@ -256,22 +263,16 @@ class Environment:
         from src.core.rescue_execution import execute_rescue
         execute_rescue(self.rescuers, self.disasters, self.GRID_SIZE, current_time_step=self.current_time_step)
         
-        # 强制使用RescueEnvironment的奖励计算方法
+        # 使用rl_util中的奖励计算函数
         try:
-            from src.rl.marl_rescue import RescueEnvironment
-            
-            # 创建一个临时环境对象用于奖励计算
-            temp_env = RescueEnvironment(self)
-            reward, reward_info = temp_env.calculate_reward(rescuer_idx, old_state, old_disasters)
+            from src.rl.rl_util import calculate_reward
+            reward, reward_info = calculate_reward(self, rescuer_idx, old_state, old_disasters)
             
             # 打印调试信息
             if self.current_time_step % 10 == 0 and rescuer_idx == 0:
-                print(f"[调试] 使用 RescueEnvironment 计算奖励: {reward:.4f}, 奖励明细: {reward_info}")
-                # 打印TIME_PENALTY值
-                if hasattr(temp_env, "TIME_PENALTY"):
-                    print(f"[调试] RescueEnvironment.TIME_PENALTY = {temp_env.TIME_PENALTY}")
+                print(f"[调试] 计算奖励: {reward:.4f}, 奖励明细: {reward_info}")
         except Exception as e:
-            print(f"[错误] 使用 RescueEnvironment 计算奖励时出错: {e}")
+            print(f"[错误] 计算奖励时出错: {e}")
             # 发生错误时，使用默认奖励
             reward = -0.01
             reward_info = {"time_penalty": -0.01}
@@ -312,6 +313,14 @@ class Environment:
         }
         
         return next_state, reward, done, info
+
+    def set_rescuers(self, rescuers_data):
+        """设置救援人员列表，用于在部署时加载训练好的救援人员参数"""
+        if rescuers_data:
+            self.rescuers = rescuers_data
+            self.num_rescuers = len(rescuers_data)
+            print(f"环境已更新为使用加载的救援人员数据，数量: {self.num_rescuers}")
+        return self.rescuers
 
 
 if __name__ == "__main__":

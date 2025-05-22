@@ -59,7 +59,7 @@ STATS_WINDOW_SIZE = 30  # 统计窗口大小（用于计算救援成功率）
 # 0: 传统混合算法 (hybrid_rescue_dispatch)
 # 1: 多智能体强化学习 (marl_rescue_dispatch)
 # 2: 混合算法 (两种方法结合)
-TASK_ALLOCATION_ALGORITHM = 0  # 默认使用传统混合算法
+TASK_ALLOCATION_ALGORITHM = 1  # 默认使用传统混合算法
 
 # MARL相关配置
 MARL_CONFIG = {

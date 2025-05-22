@@ -5,13 +5,35 @@ import os
 # 全局MARL控制器实例
 marl_controller = None
 
-def initialize_marl_controller(env):
+def initialize_marl_controller(env, use_saved_rescuers=True):
     """初始化MARL控制器"""
     global marl_controller
     
     # 如果已经初始化，则直接返回
     if marl_controller is not None:
         return marl_controller
+    
+    # 尝试加载已训练的模型和救援人员数据
+    model_path = config.MARL_CONFIG["model_save_path"]
+    model_dir = os.path.dirname(model_path)
+    rescuers_data_path = os.path.join(model_dir, "rescuers_data.json")
+    
+    # 如果指定使用保存的救援人员参数且文件存在，则加载它们
+    rescuers_data = None
+    if use_saved_rescuers and os.path.exists(rescuers_data_path):
+        try:
+            from .marl_rescue import RescueEnvironment
+            rescuers_data = RescueEnvironment.load_rescuers_data(rescuers_data_path)
+            print(f"加载救援人员数据: {rescuers_data_path}，共{len(rescuers_data)}个救援人员")
+            
+            # 用加载的救援人员数据更新环境
+            if hasattr(env, 'rescuers') and hasattr(env, 'set_rescuers'):
+                env.set_rescuers(rescuers_data)
+            else:
+                # 如果是临时环境对象，直接替换rescuers属性
+                env.rescuers = rescuers_data
+        except Exception as e:
+            print(f"加载救援人员数据时出错: {e}")
     
     # 创建MARL控制器
     marl_controller = MARLController(
@@ -23,7 +45,6 @@ def initialize_marl_controller(env):
     )
     
     # 尝试加载已训练的模型
-    model_path = config.MARL_CONFIG["model_save_path"]
     if os.path.exists(model_path):
         print(f"加载MARL模型: {model_path}")
         marl_controller.load_models(model_path)
@@ -55,7 +76,7 @@ def marl_rescue_dispatch(rescuers, disasters, grid_size, current_time_step=0):
     # 初始化或获取MARL控制器
     controller = initialize_marl_controller(temp_env)
     
-    # 获取MARL推荐的动作
+    # 获取MARL推荐的动作，传递灾情信息
     actions = controller.select_actions(rescuers, disasters, training=False)
     
     # 将动作转换为任务分配
@@ -71,7 +92,7 @@ def marl_rescue_dispatch(rescuers, disasters, grid_size, current_time_step=0):
         target_pos = controller.action_to_target(action, grid_size)
         
         # 只有目标位置有灾情时才分配任务
-        if target_pos in disasters:
+        if target_pos and target_pos in disasters:
             rescuers[i]["target"] = target_pos
 
 

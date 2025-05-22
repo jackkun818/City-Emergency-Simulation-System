@@ -399,6 +399,20 @@ def custom_train_loop(env, controller, num_episodes, max_steps, with_verbose=Fal
     # 新增：用于高级可视化的环境快照列表
     env_snapshots = []
     
+    # 保存初始救援人员信息
+    initial_rescuers = env.rescuers
+    model_path = config.MARL_CONFIG['model_save_path']
+    model_dir = os.path.dirname(model_path)
+    rescuers_data_path = os.path.join(model_dir, "rescuers_data.json")
+    # 创建保存目录
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # 使用RescueEnvironment来保存救援人员数据
+    from src.rl.marl_rescue import RescueEnvironment
+    temp_env = RescueEnvironment(grid_size=env.GRID_SIZE, rescuers_data=initial_rescuers)
+    temp_env.save_rescuers_data(rescuers_data_path)
+    print(f"已保存初始救援人员数据到: {rescuers_data_path}")
+    
     # 开始训练
     for episode in range(num_episodes):
         total_reward = 0
@@ -409,7 +423,8 @@ def custom_train_loop(env, controller, num_episodes, max_steps, with_verbose=Fal
         
         # 重置环境 - 创建新的环境实例而不是调用reset方法
         if episode > 0:  # 只有在第二轮开始时才需要重置，因为第一轮已经有初始环境
-            env = Environment(verbose=False)  # 使用无输出版本
+            # 使用相同的救援人员数据重置环境，确保救援人员参数保持固定
+            env = Environment(verbose=False, rescuers_data=initial_rescuers)  # 使用无输出版本
             # 更新环境缓存
             if hasattr(controller, "_env_cache"):
                 controller._env_cache = [env]
@@ -477,8 +492,8 @@ def custom_train_loop(env, controller, num_episodes, max_steps, with_verbose=Fal
                 # 获取当前状态
                 state = env.get_state_for_rescuer(rescuer_idx)
                 
-                # 选择动作
-                action = controller.select_action(state, rescuer_idx)
+                # 选择动作，传递灾情信息
+                action = controller.select_action(state, rescuer_idx, env.disasters)
                 
                 # 执行动作并获取奖励（使用无调试输出模式）
                 with io.StringIO() as buf, contextlib.redirect_stdout(buf):

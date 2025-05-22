@@ -7,6 +7,9 @@ import random
 from collections import deque
 import os
 from src.core import config
+import json
+from src.core.environment import Environment
+from gymnasium import spaces
 
 class RescuerAgent(nn.Module):
     """单个救援人员的智能体模型"""
@@ -70,41 +73,46 @@ class ExperienceReplay:
 
 class MARLController:
     """多智能体强化学习控制器，管理所有救援人员智能体"""
-    def __init__(self, grid_size, num_rescuers, hidden_dim=128, lr=0.001, gamma=0.99):
-        self.grid_size = grid_size
-        self.num_rescuers = num_rescuers
+    def __init__(self, grid_size=None, num_rescuers=None, hidden_dim=128, lr=0.001, gamma=0.99):
+        """初始化MARL控制器"""
+        self.grid_size = grid_size or config.get_config_param("grid_size")
+        self.num_rescuers = num_rescuers or config.get_config_param("num_rescuers")
+        if isinstance(num_rescuers, list):  # 如果传入的是rescuers列表
+            self.num_rescuers = len(num_rescuers)
+        
         self.gamma = gamma
         
         # 设置设备
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._device_output = False  # 添加标志，避免多次输出设备信息
-        #print(f"使用设备: {self._device}")
         
         # 状态空间：
-        # 1. 救援人员位置(x,y)
-        # 2. 救援人员是否有任务分配
-        # 3. 救援人员的移动速度
-        # 4. 每个可能的目标灾情点的信息(x,y,level,rescue_needed)
+        # 1. 救援人员位置 (x, y)
+        # 2. 救援人员专长类型
+        # 3. 救援人员效能值
+        # 4. 每个灾情点的类型和严重程度
         # 5. 每个灾情点的当前救援资源分配情况
         # 状态维度计算: 救援人员自身状态(4) + 灾情信息(grid_size*grid_size*5)
-        self.state_dim = 4 + grid_size * grid_size * 5
+        self.state_dim = 4 + self.grid_size * self.grid_size * 5
         
         # 动作空间：
         # 0: 不动
         # 1~grid_size*grid_size: 前往对应格子坐标的灾情点
-        self.action_dim = 1 + grid_size * grid_size
+        self.action_dim = 1 + self.grid_size * self.grid_size
         
         # 为每个救援人员创建一个智能体
-        self.agents = [RescuerAgent(self.state_dim, self.action_dim, hidden_dim, device=self._device) for _ in range(num_rescuers)]
+        self.agents = [RescuerAgent(self.state_dim, self.action_dim, hidden_dim, device=self._device) for _ in range(self.num_rescuers)]
         self.optimizers = [optim.Adam(agent.parameters(), lr=lr) for agent in self.agents]
         
         # 经验回放缓冲区
-        self.replay_buffers = [ExperienceReplay(config.MARL_CONFIG["replay_buffer_size"]) for _ in range(num_rescuers)]
+        self.replay_buffers = [ExperienceReplay(config.MARL_CONFIG["replay_buffer_size"]) for _ in range(self.num_rescuers)]
         
         # 目标网络
-        self.target_agents = [RescuerAgent(self.state_dim, self.action_dim, hidden_dim, device=self._device) for _ in range(num_rescuers)]
-        for i in range(num_rescuers):
+        self.target_agents = [RescuerAgent(self.state_dim, self.action_dim, hidden_dim, device=self._device) for _ in range(self.num_rescuers)]
+        for i in range(self.num_rescuers):
             self.target_agents[i].load_state_dict(self.agents[i].state_dict())
+
+        # 更新计数器，用于定期更新目标网络
+        self.update_counter = 0
         
         # 训练参数
         self.epsilon = config.EPSILON_START if hasattr(config, "EPSILON_START") else config.MARL_CONFIG["epsilon_start"]
@@ -177,8 +185,8 @@ class MARLController:
         
         return torch.FloatTensor(state).unsqueeze(0).to(self.device)  # 添加批处理维度并移至正确设备
     
-    def select_action(self, state, rescuer_idx):
-        """为单个救援人员选择动作"""
+    def select_action(self, state, rescuer_idx, disasters=None):
+        """为单个救援人员选择动作，使用动态动作掩码"""
         # 检查rescuer_idx是否超出范围
         if rescuer_idx >= self.num_rescuers:
             print(f"警告: rescuer_idx ({rescuer_idx}) 超出了范围 ({self.num_rescuers})")
@@ -189,16 +197,53 @@ class MARLController:
             state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         elif state.device != self.device:
             state = state.to(self.device)
+        
+        # 创建动作掩码 - 初始化所有动作为无效
+        action_mask = torch.zeros(self.action_dim, device=self.device)
+        
+        # 如果提供了灾情信息，创建动态掩码
+        if disasters is not None and len(disasters) > 0:
+            # 对每个灾情点，将对应的动作标记为有效
+            for pos in disasters.keys():
+                x, y = pos
+                if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
+                    action_idx = x * self.grid_size + y + 1  # +1 是因为动作0是"不动"
+                    if 0 < action_idx < self.action_dim:  # 确保动作索引有效
+                        action_mask[action_idx] = 1.0
+            
+            # 如果没有有效动作（没有灾情点），则不动
+            if action_mask.sum() == 0:
+                return 0
+        else:
+            # 如果没有提供灾情信息，允许所有动作（除了不动）
+            action_mask[1:] = 1.0
             
         # 使用epsilon-greedy策略选择动作
         if random.random() < self.epsilon:
-            # 探索：随机选择动作
-            return random.randint(0, self.action_dim - 1)
+            # 探索：从有效动作中随机选择
+            valid_actions = torch.nonzero(action_mask).squeeze(-1)
+            if len(valid_actions) > 0:
+                # 从有效动作中随机选择
+                random_idx = random.randint(0, len(valid_actions) - 1)
+                return valid_actions[random_idx].item()
+            else:
+                # 如果没有有效动作，则不动
+                return 0
         else:
-            # 利用：选择Q值最大的动作
+            # 利用：选择Q值最大的有效动作
             with torch.no_grad():
                 _, policy_logits = self.agents[rescuer_idx](state)
-                return torch.argmax(policy_logits).item()
+                
+                # 应用掩码：将无效动作的logits设为负无穷
+                masked_logits = policy_logits.clone()
+                masked_logits[0, action_mask == 0] = float('-inf')
+                
+                # 如果所有动作都被掩码，则返回不动作
+                if (masked_logits[0] == float('-inf')).all():
+                    return 0
+                
+                # 选择最大Q值的有效动作
+                return torch.argmax(masked_logits).item()
     
     def select_actions(self, rescuers, disasters, training=False):
         """为所有救援人员选择动作，兼容旧版本API"""
@@ -210,8 +255,8 @@ class MARLController:
         
         for i in range(self.num_rescuers):
             state = self.build_state(i, rescuers, disasters)
-            # 使用select_action方法选择动作
-            action = self.select_action(state, i)
+            # 使用select_action方法选择动作，传递灾情信息
+            action = self.select_action(state, i, disasters)
             actions.append(action)
         
         return actions
@@ -354,87 +399,6 @@ class MARLController:
             if reward_type in self.reward_tracking:
                 self.reward_tracking[reward_type].append(value)
     
-    def calculate_reward(self, rescuer_idx, old_state, old_disasters):
-        """
-        计算单个救援人员的奖励
-        
-        奖励设计:
-        1. 成功完成救援任务: +COMPLETION_REWARD
-        2. 前往高优先级灾情点: +level*PRIORITY_FACTOR (优先处理高风险灾情)
-        3. 与其他救援人员协调避免重复: +COORDINATION_REWARD (如果该灾情点没有其他人前往)
-        4. 救援进度奖励: +progress*PROGRESS_FACTOR (根据救援进度增加的奖励)
-        5. 时间惩罚: -TIME_PENALTY (每个时间步的轻微惩罚，鼓励快速行动)
-        """
-        # 奖励系数 - 可以在这里调整奖励大小
-        COMPLETION_REWARD = 10.0    # 完成救援奖励
-        PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
-        COORDINATION_REWARD = 2.0   # 协调奖励
-        PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
-        TIME_PENALTY = 0.1          # 时间惩罚
-        
-        # 确保rescuer_idx在有效范围内
-        if rescuer_idx >= len(self.env.rescuers):
-            return 0, {"completion_reward": 0, "priority_reward": 0, 
-                     "coordination_reward": 0, "progress_reward": 0, "time_penalty": 0}
-            
-        rescuer = self.env.rescuers[rescuer_idx]
-        reward = 0
-        
-        # 初始化奖励明细
-        reward_info = {
-            "completion_reward": 0.0,
-            "priority_reward": 0.0,
-            "coordination_reward": 0.0,
-            "progress_reward": 0.0,
-            "time_penalty": -TIME_PENALTY  # 基础时间惩罚
-        }
-        
-        # 累加时间惩罚
-        reward += reward_info["time_penalty"]
-        
-        # 如果救援人员有目标
-        if "target" in rescuer and rescuer["target"] is not None:
-            target = rescuer["target"]
-            
-            # 如果目标是有效的灾情点
-            if target in self.env.disasters:
-                current_disaster = self.env.disasters[target]
-                old_disaster = old_disasters.get(target, None)
-                
-                # 奖励1: 根据灾情等级给予奖励
-                priority_reward = current_disaster["level"] * PRIORITY_FACTOR
-                reward_info["priority_reward"] = priority_reward
-                reward += priority_reward
-                
-                # 奖励2: 协调奖励 - 检查是否有其他救援人员前往同一目标
-                other_targeting = False
-                for i, other_rescuer in enumerate(self.env.rescuers):
-                    if i != rescuer_idx and "target" in other_rescuer and other_rescuer["target"] == target:
-                        other_targeting = True
-                        break
-                
-                if not other_targeting:
-                    coordination_reward = COORDINATION_REWARD
-                    reward_info["coordination_reward"] = coordination_reward
-                    reward += coordination_reward
-                
-                # 奖励3: 根据救援进度奖励
-                if old_disaster:
-                    # 如果旧灾情存在，计算救援进度奖励
-                    if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
-                        progress = old_disaster["rescue_needed"] - current_disaster["rescue_needed"]
-                        progress_reward = progress * PROGRESS_FACTOR
-                        reward_info["progress_reward"] = progress_reward
-                        reward += progress_reward
-                
-                # 奖励4: 如果灾情已解决，给予大奖励
-                if current_disaster["rescue_needed"] <= 0:
-                    completion_reward = COMPLETION_REWARD
-                    reward_info["completion_reward"] = completion_reward
-                    reward += completion_reward
-        
-        return reward, reward_info
-    
     def get_reward_stats(self, reset=True):
         """获取奖励统计信息并可选择性地重置跟踪数据"""
         stats = {}
@@ -488,15 +452,95 @@ class MARLController:
             print(f"加载模型时出错: {e}")
             return False
 
+    def action_to_target(self, action, grid_size=None):
+        """
+        将动作索引转换为目标位置坐标
+        
+        参数:
+            action: 动作索引（0表示不动，1~grid_size*grid_size表示目标位置）
+            grid_size: 网格大小，如果为None则使用self.grid_size
+            
+        返回:
+            (x, y): 目标位置坐标，如果action为0则返回None
+        """
+        if action <= 0:
+            return None
+            
+        if grid_size is None:
+            grid_size = self.grid_size
+            
+        action_idx = action - 1
+        x = action_idx // grid_size
+        y = action_idx % grid_size
+        
+        return (x, y)
+
 
 class RescueEnvironment:
-    """强化学习环境封装，用于与现有的救援环境交互"""
-    def __init__(self, env):
-        self.env = env
-        self.grid_size = env.GRID_SIZE
-        self.num_rescuers = len(env.rescuers)
+    def __init__(self, grid_size=None, num_rescuers=None, rescuers_data=None):
+        """初始化救援环境"""
+        self.env = Environment(grid_size=grid_size, num_rescuers=num_rescuers, rescuers_data=rescuers_data)
+        # 设置动作空间
+        self.action_space = spaces.Discrete(5)  # 4 方向移动 + 不移动
+        # 设置观察空间 (多个特征平面: 灾情, 救援者位置等)
+        grid_size = grid_size or config.get_config_param("grid_size")
+        self.observation_space = spaces.Box(low=0, high=1, shape=(grid_size, grid_size, 3), dtype=np.float32)
         self.current_time_step = 0
+        self.previous_success_count = 0
+        self.disaster_count = 0
+
+    def get_rescuers_data(self):
+        """获取救援人员数据，用于保存"""
+        return self.env.rescuers
+    
+    def save_rescuers_data(self, file_path):
+        """保存救援人员数据到文件"""
+        rescuers_data = self.get_rescuers_data()
+        # 将rescuers转换为可序列化的字典列表
+        serialized_rescuers = []
+        for rescuer in rescuers_data:
+            # 检查rescuer是否为字典类型
+            if isinstance(rescuer, dict):
+                # 如果已经是字典，直接复制
+                rescuer_dict = rescuer.copy()
+                # 确保position是列表格式（JSON不支持元组）
+                if 'position' in rescuer_dict and isinstance(rescuer_dict['position'], tuple):
+                    rescuer_dict['position'] = list(rescuer_dict['position'])
+            else:
+                # 如果是对象，提取属性
+                rescuer_dict = {
+                    'id': rescuer.id,
+                    'position': list(rescuer.position) if hasattr(rescuer, 'position') else [0, 0],
+                    'specialty': rescuer.specialty if hasattr(rescuer, 'specialty') else None,
+                    'effectiveness': rescuer.effectiveness if hasattr(rescuer, 'effectiveness') else 1.0,
+                    'capacity': rescuer.capacity if hasattr(rescuer, 'capacity') else 1,
+                    'speed': rescuer.speed if hasattr(rescuer, 'speed') else 1,
+                    'active_time': rescuer.active_time if hasattr(rescuer, 'active_time') else 0
+                }
+            serialized_rescuers.append(rescuer_dict)
         
+        # 保存为JSON文件
+        with open(file_path, 'w') as f:
+            json.dump(serialized_rescuers, f, indent=4)
+        
+        return serialized_rescuers
+        
+    @staticmethod
+    def load_rescuers_data(file_path):
+        """从文件加载救援人员数据"""
+        with open(file_path, 'r') as f:
+            rescuers_data = json.load(f)
+        
+        # 将数据转换为适当的格式
+        rescuers = []
+        for rescuer_dict in rescuers_data:
+            # 确保position是元组格式
+            if 'position' in rescuer_dict and isinstance(rescuer_dict['position'], list):
+                rescuer_dict['position'] = tuple(rescuer_dict['position'])
+            rescuers.append(rescuer_dict)
+        
+        return rescuers
+
     def reset(self):
         """重置环境"""
         # 这个方法在现有的系统中不需要实现，因为环境已经在main.py中初始化
@@ -509,8 +553,8 @@ class RescueEnvironment:
             # 如果没有MARL控制器实例，创建一个临时的
             from src.rl.marl_rescue import MARLController
             self.marl_controller = MARLController(
-                grid_size=self.grid_size,
-                num_rescuers=self.num_rescuers
+                grid_size=self.env.GRID_SIZE,
+                num_rescuers=self.env.rescuers
             )
         
         # 使用MARL控制器的状态构建方法
@@ -540,8 +584,8 @@ class RescueEnvironment:
         target_pos = None
         if action > 0:  # 非0动作表示前往某个位置
             action_idx = action - 1
-            x = action_idx // self.grid_size
-            y = action_idx % self.grid_size
+            x = action_idx // self.env.GRID_SIZE
+            y = action_idx % self.env.GRID_SIZE
             target_pos = (x, y)
             
             # 如果目标位置有灾情，则分配任务
@@ -557,7 +601,8 @@ class RescueEnvironment:
         execute_rescue(self.env.rescuers, self.env.disasters, self.env.GRID_SIZE, current_time_step=self.current_time_step)
         
         # 计算奖励
-        reward, reward_info = self.calculate_reward(rescuer_idx, old_state, old_disasters)
+        from src.rl.rl_util import calculate_reward
+        reward, reward_info = calculate_reward(self.env, rescuer_idx, old_state, old_disasters)
         
         # 获取新状态
         next_state = self.get_state_for_rescuer(rescuer_idx)
@@ -599,181 +644,294 @@ class RescueEnvironment:
         self.current_time_step += 1
         
         return next_state, reward, done, info
-    
-    def calculate_reward(self, rescuer_idx, old_state, old_disasters):
-        """
-        计算单个救援人员的奖励
-        
-        奖励设计:
-        1. 成功完成救援任务: +COMPLETION_REWARD
-        2. 前往高优先级灾情点: +level*PRIORITY_FACTOR (优先处理高风险灾情)
-        3. 与其他救援人员协调避免重复: +COORDINATION_REWARD (如果该灾情点没有其他人前往)
-        4. 救援进度奖励: +progress*PROGRESS_FACTOR (根据救援进度增加的奖励)
-        5. 时间惩罚: -TIME_PENALTY (每个时间步的轻微惩罚，鼓励快速行动)
-        """
-        # 奖励系数 - 可以在这里调整奖励大小
-        COMPLETION_REWARD = 10.0    # 完成救援奖励
-        PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
-        COORDINATION_REWARD = 2.0   # 协调奖励
-        PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
-        TIME_PENALTY = 0.1         # 时间惩罚
-        
-        # 确保rescuer_idx在有效范围内
-        if rescuer_idx >= len(self.env.rescuers):
-            return 0, {"completion_reward": 0, "priority_reward": 0, 
-                     "coordination_reward": 0, "progress_reward": 0, "time_penalty": 0}
-            
-        rescuer = self.env.rescuers[rescuer_idx]
-        reward = 0
-        
-        # 初始化奖励明细
-        reward_info = {
-            "completion_reward": 0.0,
-            "priority_reward": 0.0,
-            "coordination_reward": 0.0,
-            "progress_reward": 0.0,
-            "time_penalty": -TIME_PENALTY  # 基础时间惩罚
-        }
-        
-        # 累加时间惩罚
-        reward += reward_info["time_penalty"]
-        
-        # 如果救援人员有目标
-        if "target" in rescuer and rescuer["target"] is not None:
-            target = rescuer["target"]
-            
-            # 如果目标是有效的灾情点
-            if target in self.env.disasters:
-                current_disaster = self.env.disasters[target]
-                old_disaster = old_disasters.get(target, None)
-                
-                # 奖励1: 根据灾情等级给予奖励
-                priority_reward = current_disaster["level"] * PRIORITY_FACTOR
-                reward_info["priority_reward"] = priority_reward
-                reward += priority_reward
-                
-                # 奖励2: 协调奖励 - 检查是否有其他救援人员前往同一目标
-                other_targeting = False
-                for i, other_rescuer in enumerate(self.env.rescuers):
-                    if i != rescuer_idx and "target" in other_rescuer and other_rescuer["target"] == target:
-                        other_targeting = True
-                        break
-                
-                if not other_targeting:
-                    coordination_reward = COORDINATION_REWARD
-                    reward_info["coordination_reward"] = coordination_reward
-                    reward += coordination_reward
-                
-                # 奖励3: 根据救援进度奖励
-                if old_disaster:
-                    # 如果旧灾情存在，计算救援进度奖励
-                    if old_disaster["rescue_needed"] > current_disaster["rescue_needed"]:
-                        progress = old_disaster["rescue_needed"] - current_disaster["rescue_needed"]
-                        progress_reward = progress * PROGRESS_FACTOR
-                        reward_info["progress_reward"] = progress_reward
-                        reward += progress_reward
-                
-                # 奖励4: 如果灾情已解决，给予大奖励
-                if current_disaster["rescue_needed"] <= 0:
-                    completion_reward = COMPLETION_REWARD
-                    reward_info["completion_reward"] = completion_reward
-                    reward += completion_reward
-        
-        return reward, reward_info
 
 
 # 训练MARL系统
-def train_marl(env, num_episodes=100, max_steps=config.SIMULATION_TIME):
-    """训练MARL系统"""
-    # 创建MARL控制器
-    marl = MARLController(
-        grid_size=env.GRID_SIZE,
-        num_rescuers=len(env.rescuers),
-        hidden_dim=config.MARL_CONFIG["hidden_dim"],
-        lr=config.MARL_CONFIG["learning_rate"],
-        gamma=config.MARL_CONFIG["gamma"]
-    )
+def train_marl(env, controller, num_episodes, max_steps, with_verbose=False, save_freq=10):
+    """
+    自定义训练循环，用于MARL训练
+    """
+    """
+    自定义训练循环，用于MARL训练
+    """
+    print("开始MARL训练过程...")
+    print("-------------------------------------------")
+    print("训练分为三个阶段：")
+    print(" - 阶段1：灾难初期，生成概率约0.5，维持20-50个灾难点（少于20个自动补充到20个，多于50个自动减少到50个）")
+    print(" - 阶段2：灾难中期，生成概率约0.3，维持5-20个灾难点（少于5个自动补充到5个，多于20个自动减少到20个）")
+    print(" - 阶段3：灾难后期，生成概率约0.1，维持1-5个灾难点（少于1个自动补充到1个，多于5个自动减少到5个）")
+    print("-------------------------------------------")
     
-    # 创建强化学习环境包装
-    rl_env = RescueEnvironment(env)
+    # 存储每个回合的奖励，用于计算平均奖励
+    all_rewards = []
+    success_rates = []
+    response_times = []
+    losses = []  # 添加损失追踪
     
-    # 记录训练数据
-    all_episode_rewards = []
-    all_success_rates = []
-    all_avg_response_times = []
+    # 新增：用于高级可视化的环境快照列表
+    env_snapshots = []
     
-    print("开始训练MARL系统...")
+    # 开始训练
     for episode in range(num_episodes):
-        # 重置环境
-        env = rl_env.reset()
-        episode_rewards = [0] * len(env.rescuers)
+        total_reward = 0
+        success_count = 0
+        total_response_time = 0
+        disaster_count = 0
+        episode_loss = 0  # 记录本回合的平均损失
         
+        # 重置环境 - 创建新的环境实例而不是调用reset方法
+        if episode > 0:  # 只有在第二轮开始时才需要重置，因为第一轮已经有初始环境
+            env = Environment(verbose=False)  # 使用无输出版本
+            # 更新环境缓存
+            if hasattr(controller, "_env_cache"):
+                controller._env_cache = [env]
+        
+        # 调整探索率
+        epsilon_progress = min(1.0, episode / (0.8 * num_episodes))
+        epsilon_start = controller.epsilon_start  # 使用控制器的epsilon_start
+        epsilon_end = controller.epsilon_end  # 使用控制器的epsilon_end
+        epsilon = max(epsilon_end, epsilon_start - epsilon_progress * (epsilon_start - epsilon_end))
+        controller.epsilon = epsilon
+        
+        # 每步保存环境快照，但不立即可视化
         for step in range(max_steps):
-            # 选择动作
-            actions = marl.select_actions(env.rescuers, env.disasters, training=True)
+            if with_verbose:
+                print(f"  步骤 {step+1}/{max_steps}...")
             
-            # 记录当前状态
-            states = [marl.build_state(i, env.rescuers, env.disasters) for i in range(len(env.rescuers))]
+            # 获取每步开始时的灾难点数量（用于日志）
+            pre_adjust_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+                
+            # 调整灾难设置（不再使用详细输出）
+            adjust_disaster_settings(env, step, max_steps, verbose=False)
             
-            # 执行动作
-            env, rewards, reward_infos, done, _ = rl_env.step(actions, step)
+            # 获取调整后的灾难点数量（用于日志）
+            post_adjust_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
             
-            # 记录新状态
-            next_states = [marl.build_state(i, env.rescuers, env.disasters) for i in range(len(env.rescuers))]
+            # 每10步输出当前灾难点数量
+            if step % 10 == 0:
+                # 根据环境接口获取灾难点数量
+                current_disaster_points = post_adjust_disasters
+                
+                # 根据环境接口统计不同等级的灾难点
+                if hasattr(env, "disasters"):
+                    high_level = sum(1 for d in env.disasters.values() if d["level"] >= 9)
+                    medium_level = sum(1 for d in env.disasters.values() if 7 <= d["level"] < 9)
+                    low_level = sum(1 for d in env.disasters.values() if d["level"] < 7)
+                else:
+                    # 如果环境接口不兼容，则设置为0
+                    high_level = medium_level = low_level = 0
+                
+                # 简化输出，不再显示变化情况
+                print(f"{Colors.CYAN}[步骤 {step}/{max_steps}] 当前灾难点: {current_disaster_points} " +
+                      f"(高风险: {Colors.RED}{high_level}{Colors.CYAN}, " +
+                      f"中风险: {Colors.YELLOW}{medium_level}{Colors.CYAN}, " +
+                      f"低风险: {Colors.GREEN}{low_level}{Colors.ENDC})")
             
-            # 存储经验和跟踪奖励
-            for i in range(len(env.rescuers)):
-                marl.store_experience(
-                    i, states[i], actions[i], rewards[i], next_states[i], done
-                )
-                marl.track_rewards(reward_infos[i])
+            # 更新灾难状态（使用无调试输出模式）
+            with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+                if hasattr(env, 'update_disasters_silent'):
+                    env.update_disasters_silent(current_time_step=env.current_time_step)
+                else:
+                    env.update_disasters(current_time_step=env.current_time_step)
             
-            # 更新智能体
-            loss = marl.update_agents()
+            # 增加环境的当前时间步，确保时间正确推进
+            env.current_time_step = env.current_time_step + 1 if hasattr(env, 'current_time_step') else step
             
-            # 累计奖励
-            for i in range(len(env.rescuers)):
-                episode_rewards[i] += rewards[i]
+            # 根据环境接口获取当前灾难点数量
+            current_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+            disaster_count = max(disaster_count, current_disasters)
             
-            if done:
+            # 遍历每个救援者智能体
+            for rescuer_idx in range(config.NUM_RESCUERS):
+                if with_verbose:
+                    print(f"    处理救援者 {rescuer_idx+1}/{config.NUM_RESCUERS}...")
+                    
+                # 获取当前状态
+                state = env.get_state_for_rescuer(rescuer_idx)
+                
+                # 选择动作
+                action = controller.select_action(state, rescuer_idx)
+                
+                # 执行动作并获取奖励（使用无调试输出模式）
+                with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+                    next_state, reward, done, info = env.step(rescuer_idx, action)
+                
+                # 处理奖励信息
+                total_reward += reward
+                if 'success' in info and info['success']:
+                    success_count += 1
+                if 'response_time' in info and info['response_time'] > 0:  # 确保响应时间有效
+                    total_response_time += info['response_time']
+                    
+                # 存储转换到经验回放缓冲区
+                controller.store_transition(state, action, reward, next_state, done, rescuer_idx)
+            
+            # 更新神经网络
+            loss = controller.update_agents()
+            episode_loss += loss  # 累计损失
+            
+            # 保存环境快照 - 每一步都保存
+            env_copy = copy.deepcopy(env)
+            
+            # 计算当前步骤的成功率（临时计算用于快照记录）
+            current_success_rate = success_count / max(1, disaster_count)
+            
+            # 创建快照字典
+            snapshot = {
+                "env": env_copy,
+                "time_step": episode * max_steps + step,  # 计算总时间步
+                "success_rate": current_success_rate,
+                "episode": episode + 1,
+                "step": step + 1
+            }
+            
+            # 添加到快照列表
+            env_snapshots.append(snapshot)
+            
+            # 如果训练过程结束，跳出循环
+            if env.is_episode_done():
+                if with_verbose:
+                    print("回合结束条件满足，提前结束本回合")
                 break
         
-        # 计算本轮训练的统计数据
-        from src.utils.stats import calculate_rescue_success_rate, calculate_average_response_time
+        # 计算平均损失 - 确保不为零
+        steps_completed = min(step + 1, max_steps)  # 使用实际完成的步数
+        avg_loss = episode_loss / steps_completed if steps_completed > 0 else 0
         
-        success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE)
-        avg_response_time = calculate_average_response_time(env.disasters)
+        # 不再对损失进行裁剪
+        losses.append(avg_loss)
         
-        avg_episode_reward = sum(episode_rewards) / len(episode_rewards)
-        all_episode_rewards.append(avg_episode_reward)
-        all_success_rates.append(success_rate)
-        all_avg_response_times.append(avg_response_time)
+        # 计算平均奖励和成功率
+        avg_reward = total_reward / config.NUM_RESCUERS if config.NUM_RESCUERS > 0 else 0
+        success_rate = success_count / max(1, disaster_count)  # 确保分母非零
         
-        print(f"Episode {episode+1}/{num_episodes} | "
-              f"Avg Reward: {avg_episode_reward:.2f} | "
-              f"Success Rate: {success_rate:.2f} | "
-              f"Avg Response Time: {avg_response_time:.2f} | "
-              f"Epsilon: {marl.epsilon:.2f}")
+        # 计算平均响应时间 - 修复计算逻辑
+        avg_response_time = total_response_time / max(1, success_count)  # 确保分母非零
         
-        # 每10轮保存一次模型
-        if (episode + 1) % 10 == 0:
-            marl.save_models()
+        all_rewards.append(avg_reward)
+        success_rates.append(success_rate)
+        response_times.append(avg_response_time)
+        
+        # 每隔一定回合保存模型
+        if (episode + 1) % save_freq == 0:
+            controller.save_models(f"model_episode_{episode+1}")
+            print(f"[进度 {episode+1}/{num_episodes}] 已保存模型 (完成: {(episode+1)/num_episodes*100:.1f}%)")
+        
+        # 每轮输出一次综合信息 - 结合了之前分散的输出
+        print(f"[轮次 {episode+1}/{num_episodes}] 探索率: {epsilon:.4f}, 平均奖励: {avg_reward:.2f}, " +
+              f"成功率: {success_rate:.2f}, 平均响应时间: {avg_response_time:.2f}秒, 平均损失: {avg_loss:.4f}")
+        
+        # 每轮都输出本轮训练详细数据
+        print(f"\n----- 本轮训练详细数据 -----")
+        print(f"• 灾难点数量: {disaster_count}")
+        print(f"• 成功救援次数: {success_count}")
+        print(f"• 总奖励: {total_reward:.2f}")
+        print(f"• 训练步数: {steps_completed}")
+        
+        # 每10个回合输出一次最近100回合的统计信息
+        if (episode + 1) % 10 == 0 or episode == num_episodes - 1:
+            recent_rewards = all_rewards[-100:] if len(all_rewards) >= 100 else all_rewards
+            recent_success = success_rates[-100:] if len(success_rates) >= 100 else success_rates
+            recent_response = response_times[-100:] if len(response_times) >= 100 else response_times
+            recent_losses = losses[-100:] if len(losses) >= 100 else losses
             
-        # 每100轮输出奖励统计
-        if (episode + 1) % 100 == 0:
-            reward_stats = marl.get_reward_stats()
-            print("\n=== 最近100轮奖励统计 ===")
-            print(f"完成任务奖励: 总计={reward_stats['completion_reward']['total']:.2f}, 平均={reward_stats['completion_reward']['avg']:.2f}")
-            print(f"高优先级任务奖励: 总计={reward_stats['priority_reward']['total']:.2f}, 平均={reward_stats['priority_reward']['avg']:.2f}")
-            print(f"协调奖励: 总计={reward_stats['coordination_reward']['total']:.2f}, 平均={reward_stats['coordination_reward']['avg']:.2f}")
-            print(f"进度奖励: 总计={reward_stats['progress_reward']['total']:.2f}, 平均={reward_stats['progress_reward']['avg']:.2f}")
-            print(f"时间惩罚: 总计={reward_stats['time_penalty']['total']:.2f}, 平均={reward_stats['time_penalty']['avg']:.2f}")
-            print("=========================\n")
+            print("\n========== 最近训练统计信息 ==========")
+            print(f"最近{len(recent_rewards)}回合统计:")
+            print(f"• 平均奖励: {np.mean(recent_rewards):.2f}")
+            print(f"• 平均成功率: {np.mean(recent_success):.2f}")
+            print(f"• 平均响应时间: {np.mean(recent_response):.2f}秒")
+            print(f"• 平均损失: {np.mean(recent_losses):.4f}")
+            print(f"• 当前探索率: {epsilon:.4f}")
+            print(f"• 最高成功率: {max(recent_success) if recent_success else 0:.2f}")
+            
+            # 添加奖励分解信息（如果可用）
+            if hasattr(controller, "get_reward_stats"):
+                reward_stats = controller.get_reward_stats(reset=False)
+                print(f"\n奖励分解:")
+                for reward_type, stats in reward_stats.items():
+                    if stats["total"] != 0:  # 只显示非零奖励
+                        print(f"• {reward_type}: 总计={stats['total']:.2f}, 平均={stats['avg']:.2f}")
+            
+            print("==================================\n")
+        
+        # 每轮结束时保存元数据，简化逻辑，移除可视化部分
+        print(f"\n[元数据] 正在保存第 {episode+1} 轮的训练元数据...")
+
+        # 创建元数据保存目录结构
+        metadata_dir = os.path.join(SAVE_DIR, "metadata")
+        os.makedirs(metadata_dir, exist_ok=True)
+
+        # 创建该轮的元数据文件名（确保不会覆盖）
+        episode_meta_file = os.path.join(metadata_dir, f"episode_{episode+1:04d}.json")
+
+        # 提取当前轮的快照元数据
+        episode_meta = []
+        for snapshot in env_snapshots:
+            if snapshot["episode"] == episode + 1:
+                # 保存元数据
+                meta = {
+                    "time_step": snapshot["time_step"],
+                    "success_rate": snapshot["success_rate"],
+                    "episode": snapshot["episode"],
+                    "step": snapshot["step"],
+                    # 添加更多状态信息
+                    "disaster_count": disaster_count,
+                    "success_count": success_count,
+                    "total_reward": total_reward,
+                    "avg_reward": avg_reward,
+                    "avg_response_time": avg_response_time
+                }
+                episode_meta.append(meta)
+
+        # 保存元数据（按步骤排序）
+        episode_meta.sort(key=lambda x: x["step"])
+        with open(episode_meta_file, 'w') as f:
+            json.dump({
+                "metadata": episode_meta,
+                "env_config": {
+                    "grid_size": env.GRID_SIZE,
+                    "num_rescuers": len(env.rescuers),
+                    "max_steps": max_steps
+                },
+                "metrics": {
+                    "rewards": all_rewards[:episode+1],
+                    "success_rates": success_rates[:episode+1],
+                    "response_times": response_times[:episode+1],
+                    "losses": losses[:episode+1] if losses else []
+                }
+            }, f)
+
+        print(f"[元数据] 第 {episode+1} 轮训练元数据已保存到: {episode_meta_file}")
+
+        # 保存训练环境快照，用于后续可能的可视化
+        snapshot_dir = os.path.join(SAVE_DIR, "snapshots", f"episode_{episode+1:04d}")
+        os.makedirs(snapshot_dir, exist_ok=True)
+
+        # 保存最后一步的环境快照
+        if len(env_snapshots) > 0:
+            # 找到当前轮的最后一个快照
+            last_snapshot = None
+            for snapshot in reversed(env_snapshots):
+                if snapshot["episode"] == episode + 1:
+                    last_snapshot = snapshot
+                    break
+            
+            if last_snapshot:
+                # 保存仅包含必要信息的环境快照
+                snapshot_file = os.path.join(snapshot_dir, "final_state.pkl")
+                with open(snapshot_file, 'wb') as f:
+                    pickle.dump(last_snapshot, f)
+                print(f"[快照] 已保存环境状态快照到: {snapshot_file}")
+
+        # 只保留最新一轮的环境快照，释放内存
+        if episode > 0:  # 第一轮之后才清理
+            # 筛选出当前轮的快照，释放之前轮的快照
+            env_snapshots = [s for s in env_snapshots if s["episode"] == episode + 1]
+            print(f"[内存] 已清理旧轮次环境快照，当前保留 {len(env_snapshots)} 个快照")
     
-    # 训练结束，保存最终模型
-    marl.save_models()
-    
-    return marl, all_episode_rewards, all_success_rates, all_avg_response_times
+    return all_rewards, success_rates, response_times
+
+
 
 
 # 评估MARL系统

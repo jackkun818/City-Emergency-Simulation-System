@@ -129,8 +129,10 @@ class MARLController:
         # 3. 救援人员效能值
         # 4. 每个灾情点的类型和严重程度
         # 5. 每个灾情点的当前救援资源分配情况
-        # 状态维度计算: 救援人员自身状态(4) + 灾情信息(grid_size*grid_size*5)
-        self.state_dim = 4 + self.grid_size * self.grid_size * 5
+        # 6. 其他智能体的位置信息
+        # 7. 其他智能体的目标位置信息
+        # 状态维度计算: 救援人员自身状态(4) + 灾情信息(grid_size*grid_size*7)
+        self.state_dim = 4 + self.grid_size * self.grid_size * 7
         
         # 动作空间：
         # 0: 不动
@@ -198,24 +200,38 @@ class MARLController:
             rescuer.get("speed", config.MAX_SPEED) / config.MAX_SPEED  # 标准化移动速度
         ]
         
-        # 网格状态矩阵初始化
-        grid_state = np.zeros((self.grid_size, self.grid_size, 5))
+        # 网格状态矩阵初始化 - 增加到7个通道以包含更多信息
+        grid_state = np.zeros((self.grid_size, self.grid_size, 7))
         
         # 填充灾情信息
         for pos, disaster in disasters.items():
             x, y = pos
             if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
-                # 灾情存在标志
+                # 通道0: 灾情存在标志
                 grid_state[x, y, 0] = 1.0  
-                # 标准化灾情等级
+                # 通道1: 标准化灾情等级（衰减等级）
                 grid_state[x, y, 1] = disaster["level"] / config.CRITICAL_DISASTER_THRESHOLD  
-                # 标准化所需救援资源
+                # 通道2: 标准化所需救援资源（所需救援次数）
                 grid_state[x, y, 2] = disaster["rescue_needed"] / config.MAX_RESCUE_CAPACITY  
-                # 标准化已分配资源
+                # 通道3: 标准化已分配资源（有多少智能体将此处设为目标）
                 assigned_count = sum(1 for r in rescuers if "target" in r and r["target"] == pos)
                 grid_state[x, y, 3] = assigned_count / self.num_rescuers  
-                # 剩余所需救援资源
+                # 通道4: 剩余所需救援资源（与通道2相同，保持向后兼容）
                 grid_state[x, y, 4] = disaster["rescue_needed"] / config.MAX_RESCUE_CAPACITY
+        
+        # 新增：填充其他智能体位置信息
+        for i, other_rescuer in enumerate(rescuers):
+            if i != rescuer_idx:  # 排除自己
+                other_x, other_y = other_rescuer["position"]
+                if 0 <= other_x < self.grid_size and 0 <= other_y < self.grid_size:
+                    # 通道5: 其他智能体位置密度（多个智能体在同一位置会累加）
+                    grid_state[other_x, other_y, 5] += 1.0 / (self.num_rescuers - 1)  # 标准化
+                    
+                    # 通道6: 其他智能体的目标位置密度
+                    if "target" in other_rescuer and other_rescuer["target"] is not None:
+                        target_x, target_y = other_rescuer["target"]
+                        if 0 <= target_x < self.grid_size and 0 <= target_y < self.grid_size:
+                            grid_state[target_x, target_y, 6] += 1.0 / (self.num_rescuers - 1)  # 标准化
         
         # 将网格状态展平并添加到状态向量
         grid_state_flat = grid_state.flatten()

@@ -89,13 +89,13 @@ def start_simulation():
     env_snapshots = []
     progress_data = []
 
-    for t in range(30):
+    for t in range(config.SIMULATION_TIME):
         env.update_disasters(current_time_step=t)
         dispatch_rescue_tasks(env.rescuers, env.disasters, env.GRID_SIZE, current_time_step=t)
         execute_rescue(env.rescuers, env.disasters, env.GRID_SIZE, current_time_step=t)
 
         # 计算当前时间步的成功率
-        success_rate = calculate_rescue_success_rate(env.disasters, window=30, current_time_step=t)
+        success_rate = calculate_rescue_success_rate(env.disasters, window=config.STATS_WINDOW_SIZE, current_time_step=t)
         progress_data.append((t, success_rate))
 
         # 保存环境快照

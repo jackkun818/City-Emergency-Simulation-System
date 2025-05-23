@@ -154,14 +154,18 @@ def adjust_disaster_settings(env, step, max_steps, verbose=False):
     if verbose or step % 50 == 0:
         print(f"\033[33m当前{phase}：灾难生成概率={env.disaster_gen_prob:.1f}, 活跃灾难点范围={min_disasters}-{max_disasters}个，当前有{current_disasters}个活跃灾难点\033[0m")
     
-    # 只保留删除逻辑，用于阶段变化时的上限调整
+    # 强制补充逻辑：当活跃灾难点数量不足最小值时，直接添加新的灾难点
+    if current_disasters < min_disasters and hasattr(env, "disasters"):
+        shortage = min_disasters - current_disasters
+        added_count = _force_add_disasters(env, shortage, verbose=verbose)
+        if added_count > 0:
+            print(f"🚨 强制补充：活跃灾难点不足，已添加{added_count}个新灾难点（目标缺口: {shortage}）")
+    
     # 当活跃灾难点数量超过最大值时，智能移除灾难点（保护正在被救援的点）
     if current_disasters > max_disasters and hasattr(env, "disasters"):
         # 使用改进的智能减少方法，保护正在被救援的灾难点
         _smart_reduce_disasters(env, max_disasters, verbose=False)
         print(f"🔄 阶段变化：活跃灾难点从{current_disasters}个减少到上限{max_disasters}个")
-    
-    # 移除了灾难点添加逻辑 - 让update_disasters负责根据概率和上限自然生成
 
 def _smart_reduce_disasters(env, target_count, verbose=False):
     """
@@ -240,6 +244,64 @@ def _smart_reduce_disasters(env, target_count, verbose=False):
         print(f"成功移除{removed}个灾难点，当前活跃灾难点数量：{new_active_count}（保护了{len(protected_positions)}个正在被救援的点）")
     
     return removed > 0
+
+def _force_add_disasters(env, count, verbose=False):
+    """
+    强制添加指定数量的新灾难点
+    
+    参数:
+        env: 环境对象
+        count: 需要添加的灾难点数量
+        verbose: 是否输出详细信息
+        
+    返回:
+        实际添加的灾难点数量
+    """
+    import random
+    from src.core import config
+    
+    if not hasattr(env, "disasters") or not hasattr(env, "GRID_SIZE"):
+        return 0
+    
+    added_count = 0
+    max_attempts = count * 10  # 防止无限循环
+    attempts = 0
+    
+    while added_count < count and attempts < max_attempts:
+        attempts += 1
+        
+        # 随机选择一个空的位置
+        x = random.randint(0, env.GRID_SIZE - 1)
+        y = random.randint(0, env.GRID_SIZE - 1)
+        pos = (x, y)
+        
+        # 如果该位置已经有灾难点，跳过
+        if pos in env.disasters:
+            continue
+        
+        # 创建新的灾难点
+        disaster_level = random.uniform(1, config.CRITICAL_DISASTER_THRESHOLD)
+        rescue_needed = random.randint(1, config.MAX_RESCUE_CAPACITY)
+        
+        # 添加灾难点
+        env.disasters[pos] = {
+            "level": disaster_level,
+            "rescue_needed": rescue_needed,
+            "time_step": getattr(env, 'current_time_step', 0),  # 记录创建时间
+            "rescue_success": False,  # 初始状态为未成功
+            "frozen_level": False,    # 未冻结等级
+            "frozen_rescue": False    # 未冻结救援状态
+        }
+        
+        added_count += 1
+        
+        if verbose:
+            print(f"  ➕ 在位置({x}, {y})添加新灾难点：等级={disaster_level:.1f}, 需救援={rescue_needed}")
+    
+    if verbose and added_count < count:
+        print(f"⚠️ 只成功添加了{added_count}/{count}个灾难点（尝试{attempts}次后停止）")
+    
+    return added_count
 
 def _force_reduce_disasters(env, target_count, verbose=False):
     """

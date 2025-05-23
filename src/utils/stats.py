@@ -73,18 +73,6 @@ def calculate_average_response_time(disasters):
                     valid_points += 1
                 elif response_time <= 0:
                     print(f"警告: 灾情点 {pos} 的响应时间为负数或零: {response_time}，end_time_step={d['end_time_step']}, time_step={d['time_step']}")
-            # 兼容旧格式
-            elif "end_time" in d and "start_time" in d and isinstance(d["end_time"], (int, float)) and isinstance(d["start_time"], (int, float)):
-                # 尝试使用时间戳计算，但需转换为相对较小的数值
-                try:
-                    time_diff = d["end_time"] - d["start_time"]
-                    if time_diff > 0 and time_diff < 100:  # 假设时间差不会太大
-                        response_times.append(time_diff)
-                        valid_points += 1
-                    else:
-                        print(f"警告: 灾情点的时间差异过大: {time_diff}")
-                except (TypeError, ValueError) as e:
-                    print(f"计算响应时间时出错: {e}")
         
         print(f"计算平均响应时间: 共{total_points}个灾情点，有效点{valid_points}个，有效响应时间{len(response_times)}个")
         # 如果没有有效的响应时间，返回0

@@ -98,7 +98,6 @@ class Environment:
                 self.disasters[(x, y)] = {
                     "level": level,
                     "rescue_needed": rescue_needed,
-                    "start_time": time.time(),  # 记录灾情点出现的时间
                     "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
                     "frozen_level": False,  # 初始状态为未冻结
                     "frozen_rescue": False,  # 初始状态为未冻结
@@ -126,7 +125,7 @@ class Environment:
                     disaster["rescue_success"] = False  # 明确标记为救援失败
                     # 设置结束时间步
                     if current_time_step:
-                        disaster["end_time"] = current_time_step
+                        disaster["end_time_step"] = current_time_step
                     print(f"⚪ 灾情点 {pos} 未能成功救援！")
 
     def update_disasters_silent(self, current_time_step=None):
@@ -169,7 +168,6 @@ class Environment:
                 self.disasters[(x, y)] = {
                     "level": level,
                     "rescue_needed": rescue_needed,
-                    "start_time": time.time(),  # 记录灾情点出现的时间
                     "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
                     "frozen_level": False,  # 初始状态为未冻结
                     "frozen_rescue": False,  # 初始状态为未冻结

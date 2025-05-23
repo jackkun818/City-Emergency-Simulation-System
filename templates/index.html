@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>城市应急模拟可视化</title>
+  <!-- 添加mpld3所需的JavaScript库 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.17/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mpld3/0.3.1/mpld3.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 30px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    label {
+      display: inline-block;
+      width: 220px;
+      margin-top: 10px;
+      color: #333;
+    }
+    input {
+      width: 80px;
+      padding: 5px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    button {
+      margin: 10px 5px;
+      padding: 8px 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    #plotContainer {
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background-color: white;
+      min-height: 400px;
+    }
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+    /* 添加交互式图表的样式 */
+    .mpld3-figure {
+      width: 100%;
+      height: 600px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚨 城市应急救援模拟</h1>
+
+    <form id="simForm">
+      <label>救援人员数量：
+        <input type="number" name="num_rescuers" value="{{ params.NUM_RESCUERS }}" min="1" required>
+      </label><br>
+      <label>每人最大救援能力：
+        <input type="number" name="capacity" value="{{ params.MAX_RESCUE_CAPACITY }}" min="1" required>
+      </label><br>
+      <label>最大移动速度：
+        <input type="number" name="speed" value="{{ params.MAX_SPEED }}" min="1" required>
+      </label><br>
+
+      <button type="submit">▶️ 开始模拟</button>
+      <button type="button" onclick="refreshImage()">🖼️ 刷新图像</button>
+      <button type="button" onclick="resetParams()">🔄 重置参数</button>
+    </form>
+
+    <div id="plotContainer">
+      <div class="loading">等待模拟开始...</div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('simForm');
+    const plotContainer = document.getElementById('plotContainer');
+
+    // 显示加载状态
+    function showLoading() {
+      plotContainer.innerHTML = '<div class="loading">正在生成可视化...</div>';
+    }
+
+    // 提交模拟请求
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const formData = new FormData(form);
+      showLoading();
+
+      fetch('/start', {
+        method: 'POST',
+        body: formData
+      })
+      .then(res => res.json())
+      .then(data => {
+        console.log('[开始模拟]', data);
+        refreshImage();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        plotContainer.innerHTML = '<div class="loading">模拟过程中出现错误，请重试</div>';
+      });
+    });
+
+function refreshImage() {
+  showLoading();
+  fetch('/plot', {
+    method: 'POST'
+  })
+  .then(res => res.json())
+  .then(data => {
+    plotContainer.innerHTML = `
+      <video controls autoplay loop width="100%">
+        <source src="${data.video}" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>`;
+  })
+  .catch(error => {
+    console.error('Error:', error);
+    plotContainer.innerHTML = '<div class="loading">获取图像时出现错误，请重试</div>';
+  });
+}
+
+
+
+    // 重置参数
+    function resetParams() {
+      showLoading();
+      fetch('/reset', {
+        method: 'POST'
+      })
+      .then(() => {
+        location.reload();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        plotContainer.innerHTML = '<div class="loading">重置参数时出现错误，请重试</div>';
+      });
+    }
+  </script>
+</body>
+</html>

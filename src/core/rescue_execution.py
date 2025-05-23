@@ -164,15 +164,13 @@ def execute_rescue_silent(rescuers, disasters, grid_size, current_time_step=None
                     if disaster["rescue_needed"] <= 0:
                         disaster["rescue_needed"] = 0
                         disaster["rescue_success"] = True
+                        disaster["frozen_rescue"] = True  # 添加frozen_rescue标记
                         
                         # 记录灾情点的结束时间
-                        disaster["end_time"] = time.time()
                         if current_time_step is not None:
                             disaster["end_time_step"] = current_time_step
-                            # 检查是否有time_step，如果没有，添加一个合理值
-                            if "time_step" not in disaster:
-                                # 如果没有time_step，假设是较早的时间步
-                                disaster["time_step"] = max(0, current_time_step - 5)
+                        else:
+                            disaster["end_time_step"] = 0  # 默认值
                         
                         # 标记为已完成
                         completed_disasters.append((target_x, target_y))

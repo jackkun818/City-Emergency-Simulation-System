@@ -2,7 +2,9 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
 import matplotlib
+from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Slider, Button  # 导入Slider和Button控件
+from matplotlib import animation as manimation  # 添加manimation导入
 # 使用通用的英文字体，删除SimHei引用
 matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', 'Tahoma', 'Verdana']
@@ -10,7 +12,8 @@ matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', '
 matplotlib.rcParams['axes.unicode_minus'] = False
 import time  # 用于控制动画帧率
 
-def visualize(env_snapshots, progress_data=None, embedded_mode=False):
+matplotlib.rcParams['animation.ffmpeg_path'] = r"/opt/homebrew/bin/ffmpeg"
+def visualize(env_snapshots, progress_data=None, embedded_mode=False , for_app=False):
     """
     Enhanced Visualization:
     - 🚑 Display A* planned rescue paths
@@ -326,7 +329,31 @@ def visualize(env_snapshots, progress_data=None, embedded_mode=False):
     
     # 根据嵌入模式决定是显示还是返回图形对象
     if embedded_mode:
-        return fig
+        if for_app:
+            return fig, update_plot
+        else:
+            return fig
     else:
-        plt.show()  # Display figure
-        return fig  # 同时返回图形对象，以便于后续使用
+        if for_app: 
+            plt.show()
+            return fig, update_plot
+        else:
+            plt.show()  # Display figure
+            return fig  # 同时返回图形对象，以便于后续使用
+    
+
+def export_visualization_video(env_snapshots, progress_data, output_path="static/visualization.mp4"):
+    import matplotlib
+    matplotlib.use("Agg")  # 非交互后端
+    import matplotlib.pyplot as plt
+    # ✅ 添加这一行，显式注册 ffmpeg 写出器
+    manimation.FFMpegWriter = manimation.writers['ffmpeg']
+    # 使用原函数获取绘图对象（不弹出窗口）
+    fig = visualize(env_snapshots, progress_data, embedded_mode=True)
+
+
+    fig, update_plot = visualize(env_snapshots, progress_data, embedded_mode=True, for_app=True)
+
+    ani = FuncAnimation(fig, update_plot, frames=len(env_snapshots), interval=300)
+    ani.save(output_path, writer="ffmpeg", dpi=100)
+    plt.close(fig)

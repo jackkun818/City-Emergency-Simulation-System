@@ -159,7 +159,6 @@ def adjust_disaster_settings(env, step, max_steps, verbose=False):
                     env.disasters[(x, y)] = {
                         "level": level,
                         "rescue_needed": rescue_needed,
-                        "start_time": time.time(),
                         "time_step": env.current_time_step if hasattr(env, "current_time_step") else 0,
                         "frozen_level": False,
                         "frozen_rescue": False,

@@ -6,11 +6,33 @@ import numpy as np
 import random
 from collections import deque
 import os
+import io
+import contextlib
+import copy
+import pickle
 from src.core import config
 import json
 from src.core.environment import Environment
 from gymnasium import spaces
+from src.rl.rl_util import adjust_disaster_settings, calculate_reward
 
+# 定义保存目录
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SAVE_DIR = os.path.join(project_root, 'train_visualization_save')
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+class Colors:
+    HEADER = '\033[95m'     # 粉色
+    BLUE = '\033[94m'       # 蓝色
+    CYAN = '\033[96m'       # 青色
+    GREEN = '\033[92m'      # 绿色
+    YELLOW = '\033[93m'     # 黄色
+    RED = '\033[91m'        # 红色
+    ENDC = '\033[0m'        # 结束颜色
+    BOLD = '\033[1m'        # 粗体
+    UNDERLINE = '\033[4m'   # 下划线
+
+    
 class RescuerAgent(nn.Module):
     """单个救援人员的智能体模型"""
     def __init__(self, state_dim, action_dim, hidden_dim=128, device=None):
@@ -480,10 +502,10 @@ class RescueEnvironment:
     def __init__(self, grid_size=None, num_rescuers=None, rescuers_data=None):
         """初始化救援环境"""
         self.env = Environment(grid_size=grid_size, num_rescuers=num_rescuers, rescuers_data=rescuers_data)
-        # 设置动作空间
-        self.action_space = spaces.Discrete(5)  # 4 方向移动 + 不移动
-        # 设置观察空间 (多个特征平面: 灾情, 救援者位置等)
+        # 修复动作空间定义，使其与MARLController保持一致
         grid_size = grid_size or config.get_config_param("grid_size")
+        self.action_space = spaces.Discrete(1 + grid_size * grid_size)  # 0=不动，1~grid_size*grid_size=前往对应格子坐标
+        # 设置观察空间 (多个特征平面: 灾情, 救援者位置等)
         self.observation_space = spaces.Box(low=0, high=1, shape=(grid_size, grid_size, 3), dtype=np.float32)
         self.current_time_step = 0
         self.previous_success_count = 0
@@ -601,7 +623,6 @@ class RescueEnvironment:
         execute_rescue(self.env.rescuers, self.env.disasters, self.env.GRID_SIZE, current_time_step=self.current_time_step)
         
         # 计算奖励
-        from src.rl.rl_util import calculate_reward
         reward, reward_info = calculate_reward(self.env, rescuer_idx, old_state, old_disasters)
         
         # 获取新状态
@@ -651,9 +672,6 @@ def train_marl(env, controller, num_episodes, max_steps, with_verbose=False, sav
     """
     自定义训练循环，用于MARL训练
     """
-    """
-    自定义训练循环，用于MARL训练
-    """
     print("开始MARL训练过程...")
     print("-------------------------------------------")
     print("训练分为三个阶段：")
@@ -671,6 +689,20 @@ def train_marl(env, controller, num_episodes, max_steps, with_verbose=False, sav
     # 新增：用于高级可视化的环境快照列表
     env_snapshots = []
     
+    # 保存初始救援人员信息
+    initial_rescuers = env.rescuers
+    model_path = config.MARL_CONFIG['model_save_path']
+    model_dir = os.path.dirname(model_path)
+    rescuers_data_path = os.path.join(model_dir, "rescuers_data.json")
+    # 创建保存目录
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # 使用RescueEnvironment来保存救援人员数据
+    from src.rl.marl_rescue import RescueEnvironment
+    temp_env = RescueEnvironment(grid_size=env.GRID_SIZE, rescuers_data=initial_rescuers)
+    temp_env.save_rescuers_data(rescuers_data_path)
+    print(f"已保存初始救援人员数据到: {rescuers_data_path}")
+    
     # 开始训练
     for episode in range(num_episodes):
         total_reward = 0
@@ -681,7 +713,8 @@ def train_marl(env, controller, num_episodes, max_steps, with_verbose=False, sav
         
         # 重置环境 - 创建新的环境实例而不是调用reset方法
         if episode > 0:  # 只有在第二轮开始时才需要重置，因为第一轮已经有初始环境
-            env = Environment(verbose=False)  # 使用无输出版本
+            # 使用相同的救援人员数据重置环境，确保救援人员参数保持固定
+            env = Environment(verbose=False, rescuers_data=initial_rescuers)  # 使用无输出版本
             # 更新环境缓存
             if hasattr(controller, "_env_cache"):
                 controller._env_cache = [env]
@@ -749,8 +782,8 @@ def train_marl(env, controller, num_episodes, max_steps, with_verbose=False, sav
                 # 获取当前状态
                 state = env.get_state_for_rescuer(rescuer_idx)
                 
-                # 选择动作
-                action = controller.select_action(state, rescuer_idx)
+                # 选择动作，传递灾情信息
+                action = controller.select_action(state, rescuer_idx, env.disasters)
                 
                 # 执行动作并获取奖励（使用无调试输出模式）
                 with io.StringIO() as buf, contextlib.redirect_stdout(buf):

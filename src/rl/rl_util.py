@@ -37,7 +37,7 @@ def calculate_reward(env, rescuer_idx, old_state, old_disasters):
     PRIORITY_FACTOR = 0.1       # 优先级因子 (乘以灾情等级)
     COORDINATION_REWARD = 2.0   # 协调奖励
     PROGRESS_FACTOR = 1.0       # 进度奖励因子 (乘以救援进度)
-    TIME_PENALTY = 0.1          # 时间惩罚
+    TIME_PENALTY = 1          # 时间惩罚
     
     # 确保rescuer_idx在有效范围内
     if rescuer_idx >= len(env.rescuers):
@@ -104,102 +104,125 @@ def calculate_reward(env, rescuer_idx, old_state, old_disasters):
 
 def adjust_disaster_settings(env, step, max_steps, verbose=False):
     """根据训练进度动态调整灾难设置"""
-    # 获取当前的灾难数量
-    current_disasters = len(env.disasters) if hasattr(env, "disasters") else len(env.disaster_locations) if hasattr(env, "disaster_locations") else 0
+    # 设置环境的最大步数属性，供_get_disaster_limit使用
+    env._max_steps = max_steps
+    
+    # 获取当前活跃的灾难数量（只计算需要救援的点）
+    if hasattr(env, "disasters"):
+        current_disasters = sum(1 for disaster in env.disasters.values() if disaster.get("rescue_needed", 0) > 0)
+    elif hasattr(env, "disaster_locations"):
+        current_disasters = len(env.disaster_locations)
+    else:
+        current_disasters = 0
+    
+    # 计算阶段边界（使用整数避免浮点数精度问题）
+    phase1_end = int(max_steps * 2 / 3)  # 初期结束
+    phase2_end = int(max_steps * 5 / 6)  # 中期结束
     
     # 根据训练阶段调整灾难生成概率和灾难点数量范围
-    if step < max_steps / 3:  # 初期阶段（前1/3训练）
+    if step < phase1_end:  # 初期阶段
         # 灾难初期：高频率灾难点生成，确保有足够的灾难点进行训练
-        env.disaster_gen_prob = 0.5 if hasattr(env, "disaster_gen_prob") else 0.5
+        base_prob = 0.5
         min_disasters = 20
         max_disasters = 50
         phase = "初期阶段"
-    elif step < 2 * max_steps / 3:  # 中期阶段（中间1/3训练）
+    elif step < phase2_end:  # 中期阶段
         # 灾难中期：中等频率灾难点生成，灾难点数量适中
-        env.disaster_gen_prob = 0.3 if hasattr(env, "disaster_gen_prob") else 0.3
+        base_prob = 0.3
         min_disasters = 5
         max_disasters = 20
         phase = "中期阶段"
-    else:  # 后期阶段（最后1/3训练）
+    else:  # 后期阶段
         # 灾难后期：低频率灾难点生成，灾难点数量减少
-        env.disaster_gen_prob = 0.1 if hasattr(env, "disaster_gen_prob") else 0.1
+        base_prob = 0.1
         min_disasters = 1
         max_disasters = 5
         phase = "后期阶段"
     
+    # 动态调整生成概率：如果活跃灾难点数量低于下限，提高生成概率
+    if current_disasters < min_disasters:
+        # 根据缺口大小动态提高生成概率
+        shortage = min_disasters - current_disasters
+        boost_factor = min(3.0, 1.0 + shortage * 0.2)  # 最多提高到3倍
+        env.disaster_gen_prob = base_prob * boost_factor
+        if verbose:
+            print(f"🔥 灾难点不足，提高生成概率：{base_prob:.1f} -> {env.disaster_gen_prob:.1f} (缺口: {shortage})")
+    else:
+        env.disaster_gen_prob = base_prob
+    
     # 打印当前的灾难管理策略（每50步显示一次）
     if verbose or step % 50 == 0:
-        print(f"\033[33m当前{phase}：灾难生成概率={env.disaster_gen_prob if hasattr(env, 'disaster_gen_prob') else 0.5:.1f}, 灾难点范围={min_disasters}-{max_disasters}个，当前有{current_disasters}个灾难点\033[0m")
+        print(f"\033[33m当前{phase}：灾难生成概率={env.disaster_gen_prob:.1f}, 活跃灾难点范围={min_disasters}-{max_disasters}个，当前有{current_disasters}个活跃灾难点\033[0m")
     
-    # 使用强制方法处理灾难点数量
-    # 当灾难点数量少于最小值时，添加灾难点
-    if current_disasters < min_disasters and hasattr(env, "disasters"):
-        to_add = min_disasters - current_disasters
-        
-        # 尝试添加灾难点
-        for _ in range(to_add):
-            # 找一个未被占用的位置
-            grid_size = env.GRID_SIZE if hasattr(env, "GRID_SIZE") else env.grid_size if hasattr(env, "grid_size") else 10
-            max_attempts = 10
-            
-            for _ in range(max_attempts):
-                x, y = np.random.randint(0, grid_size, size=2)
-                if (x, y) not in env.disasters:
-                    # 生成一个新的灾难点
-                    level = np.random.randint(5, 11)
-                    
-                    if level <= 6:
-                        rescue_needed = np.random.randint(5, 6)
-                    elif level <= 8:
-                        rescue_needed = np.random.randint(7, 8)
-                    else:
-                        rescue_needed = np.random.randint(9, 10)
-                    
-                    # 添加新灾难点
-                    env.disasters[(x, y)] = {
-                        "level": level,
-                        "rescue_needed": rescue_needed,
-                        "time_step": env.current_time_step if hasattr(env, "current_time_step") else 0,
-                        "frozen_level": False,
-                        "frozen_rescue": False,
-                        "rescue_success": False,
-                        "show_red_x": 0
-                    }
-                    break
-    
-    # 当灾难点数量超过最大值时，移除灾难点
+    # 只保留删除逻辑，用于阶段变化时的上限调整
+    # 当活跃灾难点数量超过最大值时，智能移除灾难点（保护正在被救援的点）
     if current_disasters > max_disasters and hasattr(env, "disasters"):
-        # 直接使用强制方法确保灾难点数量不超过最大值
-        _force_reduce_disasters(env, max_disasters, verbose=False)
+        # 使用改进的智能减少方法，保护正在被救援的灾难点
+        _smart_reduce_disasters(env, max_disasters, verbose=False)
+        print(f"🔄 阶段变化：活跃灾难点从{current_disasters}个减少到上限{max_disasters}个")
+    
+    # 移除了灾难点添加逻辑 - 让update_disasters负责根据概率和上限自然生成
 
-def _force_reduce_disasters(env, target_count, verbose=False):
+def _smart_reduce_disasters(env, target_count, verbose=False):
     """
-    直接强制管理灾难点数量，确保环境中的灾难点数量不超过目标值
+    智能减少活跃灾难点数量，优先保护正在被救援的灾难点
     
     参数:
         env: 环境对象
-        target_count: 目标灾难点数量上限
+        target_count: 目标活跃灾难点数量上限
         verbose: 是否输出详细信息
     """
     # 检查环境是否有灾难点属性
     if not hasattr(env, "disasters"):
         return False
     
-    # 获取当前灾难点数量
-    current_count = len(env.disasters)
+    # 获取当前活跃灾难点数量（只计算需要救援的点）
+    current_active_count = sum(1 for disaster in env.disasters.values() if disaster.get("rescue_needed", 0) > 0)
     
-    # 如果当前灾难点数量小于等于目标值，不需要处理
-    if current_count <= target_count:
+    # 如果当前活跃灾难点数量小于等于目标值，不需要处理
+    if current_active_count <= target_count:
         return True
     
-    # 需要移除的灾难点数量
-    to_remove = current_count - target_count
+    # 需要移除的活跃灾难点数量
+    to_remove = current_active_count - target_count
     
-    # 获取所有灾难点位置
-    disaster_positions = list(env.disasters.keys())
+    # 获取正在被救援的灾难点位置（被救援人员作为目标的点）
+    protected_positions = set()
+    if hasattr(env, "rescuers"):
+        for rescuer in env.rescuers:
+            if "target" in rescuer and rescuer["target"] in env.disasters:
+                protected_positions.add(rescuer["target"])
+    
+    # 获取可以移除的活跃灾难点（不包括被保护的点，只考虑需要救援的点）
+    removable_positions = []
+    for pos, disaster in env.disasters.items():
+        # 只考虑活跃的灾难点（需要救援的点）
+        if disaster.get("rescue_needed", 0) <= 0:
+            continue
+        # 跳过正在被救援的灾难点
+        if pos in protected_positions:
+            continue
+        # 跳过已冻结的灾难点（已完成或失败的救援）
+        if disaster.get("frozen_level", False) or disaster.get("frozen_rescue", False):
+            continue
+        # 可以移除的点
+        removable_positions.append(pos)
+    
+    # 计算实际可移除的数量
+    actual_removable = min(to_remove, len(removable_positions))
+    
+    if actual_removable == 0:
+        if verbose:
+            print(f"⚠️ 无法移除任何活跃灾难点：所有{current_active_count}个活跃灾难点都被保护或已冻结")
+        return False
+    
+    # 如果可移除的数量不足以达到目标，发出警告
+    if actual_removable < to_remove:
+        if verbose:
+            print(f"⚠️ 只能移除{actual_removable}个活跃灾难点（目标需要移除{to_remove}个），因为{len(protected_positions)}个正在被救援，其余已冻结")
     
     # 随机选择要移除的灾难点
-    positions_to_remove = random.sample(disaster_positions, to_remove)
+    positions_to_remove = random.sample(removable_positions, actual_removable)
     
     # 移除选定的灾难点
     removed = 0
@@ -208,6 +231,18 @@ def _force_reduce_disasters(env, target_count, verbose=False):
             del env.disasters[pos]
             removed += 1
         except Exception as e:
-            pass
+            if verbose:
+                print(f"移除灾难点{pos}时出错: {e}")
     
-    return removed > 0 
+    if verbose:
+        # 重新计算活跃灾难点数量
+        new_active_count = sum(1 for disaster in env.disasters.values() if disaster.get("rescue_needed", 0) > 0)
+        print(f"成功移除{removed}个灾难点，当前活跃灾难点数量：{new_active_count}（保护了{len(protected_positions)}个正在被救援的点）")
+    
+    return removed > 0
+
+def _force_reduce_disasters(env, target_count, verbose=False):
+    """
+    保留原有的强制减少函数以向后兼容，但现在调用智能减少函数
+    """
+    return _smart_reduce_disasters(env, target_count, verbose) 

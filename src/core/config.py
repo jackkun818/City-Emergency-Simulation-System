@@ -52,14 +52,14 @@ RESOURCE_SATURATION_THRESHOLD = 1.0  # 资源饱和度阈值
 NUM_RESCUERS = 10  # 默认救援人员数量
 MAX_RESCUE_CAPACITY = 3  # 每个救援人员的最大救援能力
 MAX_SPEED = 3  # 救援人员最大移动速度
-SIMULATION_TIME = 100  # 总模拟时间
+SIMULATION_TIME = 300  # 总模拟时间 - 硬编码为300步
 STATS_WINDOW_SIZE = 30  # 统计窗口大小（用于计算救援成功率）
 
 # 任务分配算法选择
 # 0: 传统混合算法 (hybrid_rescue_dispatch)
 # 1: 多智能体强化学习 (marl_rescue_dispatch)
 # 2: 混合算法 (两种方法结合)
-TASK_ALLOCATION_ALGORITHM = 0  
+TASK_ALLOCATION_ALGORITHM = 1 
 
 # MARL相关配置
 MARL_CONFIG = {

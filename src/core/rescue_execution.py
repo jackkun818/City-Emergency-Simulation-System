@@ -71,12 +71,28 @@ def execute_rescue(rescuers, disasters, grid_size, current_time_step=None):
             # 保存路径用于可视化
             rescuer["path"] = path
 
-            # ✅ 处理救援人员速度
-            if path:
-                move_steps = min(rescuer.get("speed", 1), len(path))  # 限制移动步数
-                rescuer["position"] = path[move_steps - 1]  # 走 `speed` 步
-                # 记录救援人员的活动时间
-                rescuer["active_time"] = rescuer.get("active_time", 0) + 1
+            # ✅ 检查救援人员是否已经在执行救援任务
+            is_actively_rescuing = rescuer.get("actively_rescuing", False)
+            
+            # 如果正在执行救援，不移动位置，继续救援
+            if is_actively_rescuing:
+                # 验证救援人员确实在目标位置
+                if rescuer["position"] == (target_x, target_y):
+                    # 继续执行救援，不移动
+                    pass
+                else:
+                    # 如果不在目标位置但标记为正在救援，说明数据不一致，重置状态
+                    rescuer["actively_rescuing"] = False
+                    is_actively_rescuing = False
+            
+            # 如果没有在执行救援，则移动到目标位置
+            if not is_actively_rescuing:
+                # ✅ 处理救援人员速度
+                if path:
+                    move_steps = min(rescuer.get("speed", 1), len(path))  # 限制移动步数
+                    rescuer["position"] = path[move_steps - 1]  # 走 `speed` 步
+                    # 记录救援人员的活动时间
+                    rescuer["active_time"] = rescuer.get("active_time", 0) + 1
 
             # ✅ 当救援人员抵达灾情点时，执行救援
             if rescuer["position"] == (target_x, target_y):
@@ -85,6 +101,9 @@ def execute_rescue(rescuers, disasters, grid_size, current_time_step=None):
                     print(f"❌ 错误: 救援人员 {rescuer['id']} 缺少 `capacity`，请检查 `environment.py`")
                     continue
 
+                # 标记救援人员正在执行救援任务
+                rescuer["actively_rescuing"] = True
+                
                 # 进行救援 - 按照救援人员的capacity减少rescue_needed
                 # 计算实际减少量（不超过当前rescue_needed值）
                 reduction = min(rescuer.get("capacity", 1), disasters[(target_x, target_y)]["rescue_needed"])
@@ -109,6 +128,7 @@ def execute_rescue(rescuers, disasters, grid_size, current_time_step=None):
                         disasters[(target_x, target_y)]["end_time_step"] = current_time_step
                         print(f"设置灾情点 {target_x, target_y} 的结束时间步: {current_time_step}, 开始时间步: {disasters[(target_x, target_y)].get('time_step', 'unknown')}")
                     rescuer["target"] = None  # 任务完成，清除目标
+                    rescuer["actively_rescuing"] = False  # 清除正在救援标记
 
     # 清除救援人员的无效目标
     for rescuer in rescuers:
@@ -118,6 +138,7 @@ def execute_rescue(rescuers, disasters, grid_size, current_time_step=None):
             if disasters[(target_x, target_y)].get("frozen_rescue", False) or disasters[(target_x, target_y)].get(
                     "frozen_level", False):
                 rescuer["target"] = None
+                rescuer["actively_rescuing"] = False  # 清除正在救援标记
 
 
 def execute_rescue_silent(rescuers, disasters, grid_size, current_time_step=None):
@@ -138,17 +159,33 @@ def execute_rescue_silent(rescuers, disasters, grid_size, current_time_step=None
             target_x, target_y = rescuer["target"]
             x, y = rescuer["position"]
 
-            # 计算最优路径
-            path = a_star_search(grid_size, (x, y), (target_x, target_y))
-            # 保存路径用于可视化
-            rescuer["path"] = path
+            # 检查救援人员是否已经在执行救援任务
+            is_actively_rescuing = rescuer.get("actively_rescuing", False)
+            
+            # 如果正在执行救援，不移动位置，继续救援
+            if is_actively_rescuing:
+                # 验证救援人员确实在目标位置
+                if rescuer["position"] == (target_x, target_y):
+                    # 继续执行救援，不移动
+                    pass
+                else:
+                    # 如果不在目标位置但标记为正在救援，说明数据不一致，重置状态
+                    rescuer["actively_rescuing"] = False
+                    is_actively_rescuing = False
+            
+            # 如果没有在执行救援，则移动到目标位置
+            if not is_actively_rescuing:
+                # 计算最优路径
+                path = a_star_search(grid_size, (x, y), (target_x, target_y))
+                # 保存路径用于可视化
+                rescuer["path"] = path
 
-            # 处理救援人员速度
-            if path:
-                move_steps = min(rescuer.get("speed", 1), len(path))  # 限制移动步数
-                rescuer["position"] = path[move_steps - 1]  # 走 `speed` 步
-                # 记录救援人员的活动时间
-                rescuer["active_time"] = rescuer.get("active_time", 0) + 1
+                # 处理救援人员速度
+                if path:
+                    move_steps = min(rescuer.get("speed", 1), len(path))  # 限制移动步数
+                    rescuer["position"] = path[move_steps - 1]  # 走 `speed` 步
+                    # 记录救援人员的活动时间
+                    rescuer["active_time"] = rescuer.get("active_time", 0) + 1
 
             # 如果救援人员已经到达目标位置，开始执行救援任务
             if rescuer["position"] == (target_x, target_y):
@@ -156,6 +193,9 @@ def execute_rescue_silent(rescuers, disasters, grid_size, current_time_step=None
                 
                 # 检查是否禁止救援
                 if not disaster.get("frozen_rescue", False):
+                    # 标记救援人员正在执行救援任务
+                    rescuer["actively_rescuing"] = True
+                    
                     # 根据救援人员的能力递减灾情程度
                     capacity = rescuer.get("capacity", 1)  # 默认能力为1
                     disaster["rescue_needed"] -= capacity
@@ -175,12 +215,14 @@ def execute_rescue_silent(rescuers, disasters, grid_size, current_time_step=None
                         # 标记为已完成
                         completed_disasters.append((target_x, target_y))
                         
-                        # 清除救援人员的目标
+                        # 清除救援人员的目标和救援状态
                         rescuer["target"] = None
+                        rescuer["actively_rescuing"] = False
                     
                 # 如果禁止救援，尝试找寻新目标
                 else:
                     rescuer["target"] = None
+                    rescuer["actively_rescuing"] = False
             
     # 清理已完成的灾情点
     for pos in completed_disasters:

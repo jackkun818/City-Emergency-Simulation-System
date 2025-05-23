@@ -6,7 +6,7 @@
             0
         ],
         "active_time": 0,
-        "capacity": 2,
+        "capacity": 3,
         "speed": 2
     },
     {
@@ -17,7 +17,7 @@
         ],
         "active_time": 0,
         "capacity": 1,
-        "speed": 3
+        "speed": 2
     },
     {
         "id": 2,
@@ -26,8 +26,8 @@
             0
         ],
         "active_time": 0,
-        "capacity": 2,
-        "speed": 1
+        "capacity": 1,
+        "speed": 3
     },
     {
         "id": 3,
@@ -36,7 +36,7 @@
             0
         ],
         "active_time": 0,
-        "capacity": 1,
+        "capacity": 2,
         "speed": 1
     },
     {
@@ -46,21 +46,11 @@
             0
         ],
         "active_time": 0,
-        "capacity": 2,
-        "speed": 3
+        "capacity": 1,
+        "speed": 1
     },
     {
         "id": 5,
-        "position": [
-            0,
-            0
-        ],
-        "active_time": 0,
-        "capacity": 1,
-        "speed": 2
-    },
-    {
-        "id": 6,
         "position": [
             0,
             0
@@ -70,14 +60,24 @@
         "speed": 1
     },
     {
-        "id": 7,
+        "id": 6,
         "position": [
             0,
             0
         ],
         "active_time": 0,
         "capacity": 1,
-        "speed": 2
+        "speed": 3
+    },
+    {
+        "id": 7,
+        "position": [
+            0,
+            0
+        ],
+        "active_time": 0,
+        "capacity": 2,
+        "speed": 3
     },
     {
         "id": 8,
@@ -86,8 +86,8 @@
             0
         ],
         "active_time": 0,
-        "capacity": 3,
-        "speed": 2
+        "capacity": 2,
+        "speed": 3
     },
     {
         "id": 9,
@@ -96,7 +96,7 @@
             0
         ],
         "active_time": 0,
-        "capacity": 1,
-        "speed": 2
+        "capacity": 2,
+        "speed": 3
     }
 ]

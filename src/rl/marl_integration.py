@@ -37,7 +37,7 @@ def initialize_marl_controller(env, use_saved_rescuers=True):
     
     # 创建MARL控制器
     marl_controller = MARLController(
-        grid_size=env.GRID_SIZE,
+        env_or_grid_size=env.GRID_SIZE,
         num_rescuers=len(env.rescuers),
         hidden_dim=config.MARL_CONFIG["hidden_dim"],
         lr=config.MARL_CONFIG["learning_rate"],

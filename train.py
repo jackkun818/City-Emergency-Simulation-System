@@ -3,12 +3,12 @@
 多智能体强化学习(MARL)训练脚本
 
 用法:
-  python train.py --episodes 1000 --steps 100 --save-freq 100
+  python train.py --episodes 1000 --steps 100 --save-freq 5
 
 参数:
-  --episodes   训练轮数 (默认: 1000)
-  --steps      每轮训练步数 (默认: 100)
-  --save-freq  保存频率，每多少轮保存一次模型 (默认: 100)
+  --episodes   训练轮数 (默认: 50)
+  --steps      每轮训练步数 (默认: 300)
+  --save-freq  保存频率，每多少轮保存一次模型 (默认: 5)
 """
 
 import sys
@@ -65,7 +65,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='训练多智能体强化学习模型')
     parser.add_argument('--episodes', type=int, default=50, help='训练轮数 ')
     parser.add_argument('--steps', type=int, default=300, help='每轮训练步数 ')
-    parser.add_argument('--save-freq', type=int, default=100, help='保存频率，每多少轮保存一次模型 (默认: 100)')
+    parser.add_argument('--save-freq', type=int, default=5, help='保存频率，每多少轮保存一次模型 (默认: 5)')
     return parser.parse_args()
 
 
@@ -309,37 +309,51 @@ def _force_reduce_disasters(env, target_count, verbose=False):
 
 
 def _remove_disasters_from_env(env, num_to_remove, verbose=False):
-    """根据环境接口移除灾难点"""
+    """根据环境接口智能移除灾难点，保护正在被救援的点"""
     if hasattr(env, "disasters"):
-        # 获取所有可移除的灾难点（不包括正在被救援的点）
+        # 获取正在被救援的灾难点位置（被救援人员作为目标的点）
+        protected_positions = set()
+        if hasattr(env, "rescuers"):
+            for rescuer in env.rescuers:
+                if "target" in rescuer and rescuer["target"] in env.disasters:
+                    protected_positions.add(rescuer["target"])
+        
+        # 获取可移除的灾难点（不包括正在被救援的点和已冻结的点）
         removable_disasters = []
         
         for pos, disaster in env.disasters.items():
-            # 跳过已经被分配救援人员的灾难点
-            is_targeted = False
-            if hasattr(env, "rescuers"):
-                for rescuer in env.rescuers:
-                    if "target" in rescuer and rescuer["target"] == pos:
-                        is_targeted = True
-                        break
-            
-            # 只考虑未被分配且未冻结的灾难点
-            if not is_targeted and not disaster.get("frozen_level", False) and not disaster.get("frozen_rescue", False):
-                removable_disasters.append(pos)
+            # 跳过正在被救援的灾难点
+            if pos in protected_positions:
+                continue
+            # 跳过已冻结的灾难点（已完成或失败的救援）
+            if disaster.get("frozen_level", False) or disaster.get("frozen_rescue", False):
+                continue
+            # 可以移除的点
+            removable_disasters.append(pos)
         
         # 确保不会尝试移除超过实际可移除灾难点数量
-        num_to_remove = min(num_to_remove, len(removable_disasters))
+        actual_removable = min(num_to_remove, len(removable_disasters))
+        
+        if actual_removable == 0:
+            if verbose:
+                print(f"⚠️ 无法移除任何灾难点：{len(protected_positions)}个正在被救援，其余已冻结")
+            return
+        
+        # 如果可移除的数量不足以达到目标，发出警告
+        if actual_removable < num_to_remove:
+            if verbose:
+                print(f"⚠️ 只能移除{actual_removable}个灾难点（目标需要移除{num_to_remove}个），因为{len(protected_positions)}个正在被救援")
         
         # 随机选择要移除的灾难点
         if removable_disasters:
-            disasters_to_remove = random.sample(removable_disasters, num_to_remove)
+            disasters_to_remove = random.sample(removable_disasters, actual_removable)
             
             # 移除选中的灾难点
             for disaster in disasters_to_remove:
                 del env.disasters[disaster]
             
             if verbose:
-                print(f"移除了{num_to_remove}个灾难点，当前灾难点数量：{len(env.disasters)}")
+                print(f"成功移除{actual_removable}个灾难点，当前灾难点数量：{len(env.disasters)}（保护了{len(protected_positions)}个正在被救援的点）")
 
 
 def _add_disasters_to_locations(env, num_to_add, verbose=False):
@@ -414,11 +428,11 @@ def main():
     print(f"{Colors.HEADER}{Colors.BOLD}================================{Colors.ENDC}")
     
     # 初始化环境
-    env = Environment(verbose=True)  # 只在开始时显示详细配置
+    env = Environment(verbose=True, training_mode=True)  # 启用训练模式以激活数量上限控制
     
     # 创建MARL控制器
     marl = MARLController(
-        grid_size=env.GRID_SIZE,
+        env_or_grid_size=env.GRID_SIZE,
         num_rescuers=len(env.rescuers),
         hidden_dim=config.MARL_CONFIG["hidden_dim"],
         lr=config.MARL_CONFIG["learning_rate"],

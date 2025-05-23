@@ -149,6 +149,13 @@ def hybrid_rescue_dispatch(rescuers, disasters, grid_size):
     
     # 为每个救援人员分配最优目标，能力强的先选择
     for rescuer in sorted_rescuers:
+        # 如果救援人员正在执行救援任务，跳过重新分配
+        if rescuer.get("actively_rescuing", False):
+            # 确保正在救援的目标被标记为已分配
+            if "target" in rescuer and rescuer["target"] is not None:
+                assigned_targets.add(rescuer["target"])
+            continue
+            
         # 如果已有目标且目标有效，则跳过
         if "target" in rescuer and rescuer["target"] is not None and rescuer["target"] in task_pool:
             assigned_targets.add(rescuer["target"])  # 标记此目标已被分配

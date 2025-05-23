@@ -81,7 +81,7 @@ def main():
 
     try:
         # 使用新的配置系统初始化环境，不再直接传递参数
-        env = Environment()
+        env = Environment(training_mode=True)
     except TypeError as e:
         print(f"❌ Environment initialization failed: {e}")  # 输出环境初始化失败的错误信息
         print("⚠️ Please check if `environment.py` supports the new configuration system.")  # 提示用户检查 `environment.py` 文件

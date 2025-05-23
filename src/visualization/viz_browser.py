@@ -460,13 +460,12 @@ class TrainingDataBrowser:
         toolbar.update()
     
     def visualize_selected(self):
-        """为选中的训练数据提供完全交互式可视化"""
+        """为选中的训练数据生成并播放重复的训练step过程视频"""
         if not hasattr(self, 'selected_file'):
             raise ValueError("请先选择一个训练文件")
 
         try:
             # 清除环境可视化标签页中的所有部件，确保先停止所有定时器
-            # 记录当前的after ID，以便清除
             if hasattr(self, 'update_timer_id') and self.update_timer_id:
                 self.root.after_cancel(self.update_timer_id)
                 self.update_timer_id = None
@@ -477,9 +476,6 @@ class TrainingDataBrowser:
             # 清除所有现有组件
             for widget in self.env_frame.winfo_children():
                 widget.destroy()
-            
-            # 确保在嵌入模式下使用正确的Matplotlib后端
-            matplotlib.use("TkAgg", force=False)
             
             # 在开始新的可视化前，请求垃圾回收
             import gc
@@ -510,296 +506,454 @@ class TrainingDataBrowser:
             if not os.path.exists(snapshot_dir):
                 raise FileNotFoundError(f"找不到快照目录: {snapshot_dir}")
             
-            # 确认最终快照文件存在
-            final_snapshot_file = os.path.join(snapshot_dir, "final_state.pkl")
-            if not os.path.exists(final_snapshot_file):
-                raise FileNotFoundError(f"找不到最终快照文件: {final_snapshot_file}")
+            # 确保按时间步排序
+            metadata_entries.sort(key=lambda x: x.get('step', 0))
             
-            # 处理可能的numpy版本不兼容问题
-            try:
-                # 尝试直接加载
-                with open(final_snapshot_file, 'rb') as f:
-                    final_snapshot = pickle.load(f)
-            except (ModuleNotFoundError, ImportError) as e:
-                # 如果是numpy版本问题，打印警告并使用一个更简单的方法创建一个空环境
-                self.status_label.config(text=f"警告：无法加载快照文件，创建模拟环境代替。错误: {str(e)}")
-                import sys
-                # 导入Environment类
-                sys.path.append(project_root)
-                from src.core.environment import Environment
-                
-                # 创建一个空的环境代替
-                env = Environment(verbose=False)
-                env.GRID_SIZE = env_config.get('grid_size', 20)
-                
-                # 创建一个简单的快照代替
-                final_snapshot = {"env": env, "time_step": 0, "success_rate": 0}
-            
-            # 获取环境对象
-            env = final_snapshot.get("env")
-            if not env:
-                raise ValueError("快照文件中没有找到环境对象")
-            
-            # 创建新的可视化框架
-            viz_frame = ttk.Frame(self.env_frame)
-            viz_frame.pack(fill=tk.BOTH, expand=True)
-            
-            # 创建环境快照列表：确保包含所有时间步骤
+            # 加载每个步骤的真实环境快照
             env_snapshots = []
             
-            # 收集进度数据以绘制成功率曲线
-            progress_data = []
-            for entry in metadata_entries:
-                if 'time_step' in entry and 'success_rate' in entry:
-                    progress_data.append((entry['time_step'], entry['success_rate']))
-            
-            # 确保按时间步排序
-            metadata_entries.sort(key=lambda x: x.get('time_step', 0))
-            
-            # 使用环境的copy方法为每个时间步创建独立的环境对象
-            if hasattr(env, 'copy'):
-                for entry in metadata_entries:
-                    # 创建一个环境的深拷贝
-                    env_copy = env.copy()
-                    
-                    # 添加额外的元数据
-                    snapshot_entry = {
-                        "env": env_copy,  # 使用环境的独立副本
-                        "time_step": entry.get('time_step', 0),
-                        "success_rate": entry.get('success_rate', 0),
-                        "disaster_count": entry.get('disaster_count', 0),
-                        "success_count": entry.get('success_count', 0),
-                        "total_reward": entry.get('total_reward', 0),
-                        "avg_reward": entry.get('avg_reward', 0),
-                        "avg_response_time": entry.get('avg_response_time', 0),
-                        "episode": episode_num,
-                        "step": entry.get('step', 0)
-                    }
-                    env_snapshots.append(snapshot_entry)
-            else:
-                # 如果环境没有copy方法，则使用相同的环境对象
-                self.status_label.config(text="警告：环境对象不支持复制，可能导致时间步动画效果受限")
-                for entry in metadata_entries:
-                    # 使用相同的环境对象，但包含不同的元数据
-                    snapshot_entry = {
-                        "env": env,
-                        "time_step": entry.get('time_step', 0),
-                        "success_rate": entry.get('success_rate', 0),
-                        "disaster_count": entry.get('disaster_count', 0),
-                        "success_count": entry.get('success_count', 0),
-                        "total_reward": entry.get('total_reward', 0), 
-                        "avg_reward": entry.get('avg_reward', 0),
-                        "avg_response_time": entry.get('avg_response_time', 0),
-                        "episode": episode_num,
-                        "step": entry.get('step', 0)
-                    }
-                    env_snapshots.append(snapshot_entry)
-            
-            # 确保至少有一个快照
-            if not env_snapshots:
-                # 使用最终快照作为唯一元素
-                env_snapshots = [final_snapshot]
-            
-            # 处理警告
-            import warnings
-            warnings.filterwarnings("ignore", message="This figure includes Axes that are not compatible with tight_layout")
-            warnings.filterwarnings("ignore", message="frames=None")
-            
-            # 在调用visualize前，先刷新事件队列
+            self.status_label.config(text="正在加载环境快照...")
             self.root.update()
             
-            # 直接调用visualize函数，获取图形对象
-            fig = visualize(
-                env_snapshots=env_snapshots,
-                progress_data=progress_data,  # 使用正确格式的progress_data
-                embedded_mode=True  # 确保返回图对象而不是显示
+            # 为每个元数据条目加载对应的环境快照
+            for i, entry in enumerate(metadata_entries):
+                step_num = entry.get('step', i + 1)
+                
+                # 构建步骤快照文件路径
+                step_snapshot_file = os.path.join(snapshot_dir, f"step_{step_num:04d}.pkl")
+                
+                # 尝试加载步骤快照
+                snapshot_loaded = False
+                if os.path.exists(step_snapshot_file):
+                    try:
+                        with open(step_snapshot_file, 'rb') as f:
+                            snapshot = pickle.load(f)
+                        
+                        # 验证快照数据的完整性
+                        if isinstance(snapshot, dict) and "env" in snapshot:
+                            # 补充元数据信息（以防快照中缺少某些字段）
+                            snapshot.update({
+                                "time_step": entry.get('time_step', step_num),
+                                "success_rate": entry.get('success_rate', snapshot.get('success_rate', 0)),
+                                "disaster_count": entry.get('disaster_count', snapshot.get('disaster_count', 0)),
+                                "success_count": entry.get('success_count', snapshot.get('success_count', 0)),
+                                "total_reward": entry.get('total_reward', snapshot.get('total_reward', 0)),
+                                "avg_reward": entry.get('avg_reward', snapshot.get('avg_reward', 0)),
+                                "avg_response_time": entry.get('avg_response_time', snapshot.get('avg_response_time', 0)),
+                                "episode": episode_num,
+                                "step": step_num
+                            })
+                            
+                            env_snapshots.append(snapshot)
+                            snapshot_loaded = True
+                            
+                            # 每10步更新一次状态
+                            if step_num % 10 == 0:
+                                self.status_label.config(text=f"正在加载环境快照... {step_num}/{len(metadata_entries)}")
+                                self.root.update()
+                    
+                    except Exception as e:
+                        print(f"警告：无法加载步骤 {step_num} 的快照文件 {step_snapshot_file}: {e}")
+                
+                # 如果无法加载步骤快照，尝试使用最终快照作为备选
+                if not snapshot_loaded:
+                    print(f"警告：步骤 {step_num} 快照文件不存在或损坏，将尝试使用最终快照")
+                    
+                    final_snapshot_file = os.path.join(snapshot_dir, "final_state.pkl")
+                    if os.path.exists(final_snapshot_file):
+                        try:
+                            with open(final_snapshot_file, 'rb') as f:
+                                final_snapshot = pickle.load(f)
+                            
+                            # 创建一个基于最终快照的副本，但使用当前步骤的元数据
+                            snapshot_entry = {
+                                "env": final_snapshot.get("env"),
+                                "time_step": entry.get('time_step', step_num),
+                                "success_rate": entry.get('success_rate', 0),
+                                "disaster_count": entry.get('disaster_count', 0),
+                                "success_count": entry.get('success_count', 0),
+                                "total_reward": entry.get('total_reward', 0),
+                                "avg_reward": entry.get('avg_reward', 0),
+                                "avg_response_time": entry.get('avg_response_time', 0),
+                                "episode": episode_num,
+                                "step": step_num
+                            }
+                            env_snapshots.append(snapshot_entry)
+                            snapshot_loaded = True
+                        except Exception as e:
+                            print(f"错误：无法加载最终快照作为备选: {e}")
+                
+                # 如果都无法加载，跳过这个步骤
+                if not snapshot_loaded:
+                    print(f"警告：跳过步骤 {step_num}，无法加载任何有效快照")
+            
+            # 检查是否成功加载了快照
+            if not env_snapshots:
+                raise ValueError("无法加载任何有效的环境快照。请检查快照文件是否存在且未损坏。")
+            
+            # 收集进度数据以绘制成功率曲线
+            progress_data = [(entry['time_step'], entry['success_rate']) for entry in env_snapshots]
+            
+            # 创建主容器框架
+            main_frame = ttk.Frame(self.env_frame)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # 创建标题标签
+            title_label = ttk.Label(main_frame, 
+                                   text=f"训练Episode {episode_num} - 全程step动画播放", 
+                                   font=("Arial", 14, "bold"))
+            title_label.pack(pady=(0, 10))
+            
+            # 创建视频信息框架
+            info_frame = ttk.Frame(main_frame)
+            info_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # 显示基本信息
+            info_text = f"""
+训练步骤总数: {len(env_snapshots)} steps
+预计播放时长: 约 {len(env_snapshots) * 0.5:.1f} 秒 (每step 0.5秒)
+播放模式: 自动循环播放
+状态: 正在初始化动画...
+            """.strip()
+            
+            self.info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT)
+            self.info_label.pack(anchor=tk.W)
+            
+            # 创建控制按钮框架
+            control_frame = ttk.Frame(main_frame)
+            control_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # 播放控制变量
+            self.is_playing = False
+            self.current_step = 0
+            self.animation_timer_id = None
+            
+            # 左侧按钮组
+            left_buttons = ttk.Frame(control_frame)
+            left_buttons.pack(side=tk.LEFT)
+            
+            # 播放/暂停按钮 - 固定大小
+            self.play_pause_btn = ttk.Button(left_buttons, text="▶ 开始播放", 
+                                           command=self.toggle_playback,
+                                           width=12)
+            self.play_pause_btn.pack(side=tk.LEFT, padx=(0, 5))
+            
+            # 停止按钮 - 固定大小
+            self.stop_btn = ttk.Button(left_buttons, text="⏹ 停止", 
+                                     command=self.stop_playback,
+                                     width=8)
+            self.stop_btn.pack(side=tk.LEFT, padx=(0, 10))
+            
+            # 中间速度控制组
+            speed_frame = ttk.Frame(control_frame)
+            speed_frame.pack(side=tk.LEFT, padx=(10, 0))
+            
+            # 速度控制
+            speed_label = ttk.Label(speed_frame, text="播放速度:")
+            speed_label.pack(side=tk.LEFT, padx=(0, 5))
+            
+            self.speed_var = tk.StringVar(value="正常")
+            speed_combo = ttk.Combobox(speed_frame, textvariable=self.speed_var, 
+                                     values=["慢速", "正常", "快速"], width=8, state="readonly")
+            speed_combo.pack(side=tk.LEFT)
+            
+            # 右侧步骤显示
+            self.step_label = ttk.Label(control_frame, text="当前步骤: 0/0")
+            self.step_label.pack(side=tk.RIGHT)
+            
+            # 创建matplotlib嵌入式画布
+            viz_frame = ttk.LabelFrame(main_frame, text="训练步骤可视化 (循环播放)")
+            viz_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # 使用matplotlib后端创建动画
+            matplotlib.use('TkAgg')
+            
+            # 导入可视化函数
+            from .visualization import visualize
+            
+            # 创建图形对象 - 使用第一个快照初始化
+            self.fig = visualize(
+                env_snapshots=[env_snapshots[0]], 
+                progress_data=[(0, env_snapshots[0].get('success_rate', 0))], 
+                embedded_mode=True
             )
             
-            # 保存对象供后续使用
-            self.current_fig = fig
+            # 存储环境快照以供动画使用
+            self.env_snapshots = env_snapshots
+            self.progress_data = progress_data
             
-            # 创建容器框架以提供更好的布局控制
-            container_frame = ttk.Frame(viz_frame)
-            container_frame.pack(fill=tk.BOTH, expand=True)
-            
-            # 创建FigureCanvasTkAgg对象并配置
-            canvas = FigureCanvasTkAgg(fig, master=container_frame)
-            
-            # 显式设置图形大小以适应窗口
-            fig.set_size_inches(10, 8)
-            canvas.draw()
-            
-            # 保存对象供后续使用
-            self.current_canvas = canvas
-            
-            # 将画布放置在框架中并配置以填充整个区域
-            canvas_widget = canvas.get_tk_widget()
-            canvas_widget.pack(fill=tk.BOTH, expand=True)
-            
-            # 确保当窗口调整大小时，画布也会调整
-            def on_resize(event):
-                try:
-                    # 根据窗口大小调整画布大小
-                    width, height = event.width, event.height
-                    if width > 100 and height > 100:  # 避免太小的尺寸
-                        fig.set_size_inches(width/100, height/100)
-                        canvas.draw_idle()
-                except:
-                    pass
-            
-            canvas_widget.bind("<Configure>", on_resize)
+            # 创建画布
+            self.canvas = FigureCanvasTkAgg(self.fig, master=viz_frame)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
             
             # 添加导航工具栏
-            toolbar_frame = ttk.Frame(container_frame)
+            toolbar_frame = ttk.Frame(viz_frame)
             toolbar_frame.pack(side=tk.BOTTOM, fill=tk.X)
-            toolbar = NavigationToolbar2Tk(canvas, toolbar_frame)
+            toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
             toolbar.update()
             
-            # 创建状态显示框架
-            status_frame = ttk.Frame(viz_frame)
-            status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+            # 更新步骤显示
+            self.step_label.config(text=f"当前步骤: 1/{len(env_snapshots)}")
             
-            # 添加坐标显示标签
-            coord_label = ttk.Label(status_frame, text="坐标: ---, ---")
-            coord_label.pack(side=tk.LEFT, padx=10)
+            # 更新信息标签
+            updated_info = f"""
+训练步骤总数: {len(env_snapshots)} steps
+预计播放时长: 约 {len(env_snapshots) * 0.5:.1f} 秒 (每step 0.5秒)
+播放模式: 自动循环播放
+状态: ✅ 动画已就绪，点击播放按钮开始
+            """.strip()
+            self.info_label.config(text=updated_info)
             
-            # 设置鼠标移动时的坐标显示
-            def update_coord_status(event):
-                if event.inaxes:
-                    x, y = event.xdata, event.ydata
-                    if x is not None and y is not None:
-                        coord_label.config(text=f"坐标: {x:.1f}, {y:.1f}")
-            
-            # 连接鼠标移动事件
-            cid_motion = canvas.mpl_connect('motion_notify_event', update_coord_status)
-            
-            # 确保所有Matplotlib事件能正确传递
-            def on_key_press(event):
-                key_press_handler(event, canvas, toolbar)
-            
-            # 连接键盘事件
-            cid_key = canvas.mpl_connect("key_press_event", on_key_press)
-            
-            # 处理鼠标事件特别是对滑动条的控制
-            def on_button_press(event):
-                # 记录事件已被处理以防止重复
-                event.guiEvent.widget.focus_set()
-            
-            # 连接按钮按下事件
-            cid_button = canvas.mpl_connect("button_press_event", on_button_press)
-            
-            # 清除任何可能存在的鼠标抓取冲突
-            for ax in fig.get_axes():
-                try:
-                    # 处理可能的mousegrab冲突
-                    if hasattr(ax, '_mousegrab_id') and ax._mousegrab_id:
-                        try:
-                            canvas.mpl_disconnect(ax._mousegrab_id)
-                            ax._mousegrab_id = None
-                        except:
-                            pass
-                    
-                    # 防止重复绑定事件
-                    if hasattr(ax, '_button_press'):
-                        ax._button_press = None
-                    if hasattr(ax, '_button_release'):
-                        ax._button_release = None
-                    if hasattr(ax, '_scroll_event'):
-                        ax._scroll_event = None
-                except:
-                    pass
-            
-            # 确保鼠标事件可以被正确处理
-            canvas.get_tk_widget().focus_set()
-            
-            # 创建一个存储所有事件ID的列表以便清理
-            self.event_ids = [cid_motion, cid_key, cid_button]
-            
-            # 确保窗口关闭时进行清理
-            def on_window_close():
-                """处理窗口关闭时的清理工作"""
-                # 断开所有事件连接
-                if hasattr(self, 'event_ids'):
-                    for cid in self.event_ids:
-                        try:
-                            canvas.mpl_disconnect(cid)
-                        except:
-                            pass
-                
-                # 停止所有可能的动画
-                if hasattr(fig, 'canvas') and fig.canvas:
-                    try:
-                        for a in fig.canvas.figure.animations:
-                            try:
-                                a.event_source.stop()
-                            except:
-                                pass
-                    except:
-                        pass
-                
-                # 释放图形资源
-                try:
-                    plt.close(fig)
-                except:
-                    pass
-                
-                # 清除定时任务
-                if hasattr(self, 'update_timer_id') and self.update_timer_id:
-                    try:
-                        self.root.after_cancel(self.update_timer_id)
-                        self.update_timer_id = None
-                    except:
-                        pass
-                
-                # 请求垃圾回收
-                gc.collect()
-            
-            # 设置新的关闭处理协议
-            self.root.protocol("WM_DELETE_WINDOW", on_window_close)
-            
-            # 当标签页改变或应用关闭时清理资源
-            def on_cleanup():
-                """清理所有资源"""
-                try:
-                    on_window_close() # 调用清理函数
-                except:
-                    pass
-            
-            # 创建轻量级的事件处理器以保持界面响应性
-            # 这个函数每50毫秒处理一次matplotlib事件，确保滑动条和按钮能够正常工作
-            def process_matplotlib_events():
-                try:
-                    # 处理Matplotlib事件（确保动画和滑动条正常工作）
-                    if hasattr(fig, 'canvas') and fig.canvas:
-                        # 刷新事件但不重绘整个画布
-                        try:
-                            fig.canvas.flush_events()
-                        except:
-                            pass
-                
-                    # 继续循环
-                    self.update_timer_id = self.root.after(40, process_matplotlib_events)
-                except Exception as e:
-                    # 出错时打印信息但继续尝试
-                    print(f"处理Matplotlib事件时出错: {e}")
-                    # 尝试恢复
-                    self.update_timer_id = self.root.after(100, process_matplotlib_events)
-            
-            # 启动事件处理循环（更频繁的更新以确保响应性）
-            self.update_timer_id = self.root.after(40, process_matplotlib_events)
-            
-            # 更新状态标签
-            self.status_label.config(text=f"已加载 {len(env_snapshots)} 个时间步的完全交互式可视化")
+            # 更新主状态标签
+            self.status_label.config(text=f"已加载 {len(env_snapshots)} 个真实训练步骤快照")
             
             # 切换到环境可视化标签页
             self.viz_notebook.select(self.env_tab)
             
         except Exception as e:
             # 记录错误并显示
-            self.status_label.config(text=f"可视化出错: {str(e)}")
+            self.status_label.config(text=f"动画加载出错: {str(e)}")
             import traceback
             traceback.print_exc()
-            raise
+    
+    def toggle_playback(self):
+        """切换播放/暂停状态"""
+        if not hasattr(self, 'env_snapshots') or not self.env_snapshots:
+            return
+        
+        if self.is_playing:
+            # 当前正在播放，切换到暂停
+            self.is_playing = False
+            if self.animation_timer_id:
+                self.root.after_cancel(self.animation_timer_id)
+                self.animation_timer_id = None
+            self.play_pause_btn.config(text="▶ 继续播放")
+        else:
+            # 当前暂停，开始播放
+            self.is_playing = True
+            self.play_pause_btn.config(text="⏸ 暂停播放")
+            self.start_animation()
+    
+    def stop_playback(self):
+        """停止播放并重置到第一步"""
+        self.is_playing = False
+        if self.animation_timer_id:
+            self.root.after_cancel(self.animation_timer_id)
+            self.animation_timer_id = None
+        
+        # 重置到第一步
+        self.current_step = 0
+        self.play_pause_btn.config(text="▶ 开始播放")
+        
+        # 更新显示
+        if hasattr(self, 'env_snapshots') and self.env_snapshots:
+            self.update_visualization()
+            self.step_label.config(text=f"当前步骤: 1/{len(self.env_snapshots)}")
+    
+    def start_animation(self):
+        """开始动画循环"""
+        if not self.is_playing:
+            return
+        
+        # 更新当前可视化
+        self.update_visualization()
+        
+        # 计算播放间隔（基于速度设置）
+        speed = self.speed_var.get()
+        if speed == "慢速":
+            interval = 1000  # 1秒
+        elif speed == "快速":
+            interval = 200   # 0.2秒
+        else:  # 正常
+            interval = 500   # 0.5秒
+        
+        # 移动到下一步
+        self.current_step = (self.current_step + 1) % len(self.env_snapshots)
+        
+        # 更新步骤显示
+        self.step_label.config(text=f"当前步骤: {self.current_step + 1}/{len(self.env_snapshots)}")
+        
+        # 安排下一次更新
+        if self.is_playing:
+            self.animation_timer_id = self.root.after(interval, self.start_animation)
+    
+    def update_visualization(self):
+        """更新可视化内容到当前步骤"""
+        if not hasattr(self, 'env_snapshots') or not self.env_snapshots:
+            return
+        
+        if not hasattr(self, 'fig') or not self.fig:
+            return
+        
+        try:
+            # 获取当前步骤的快照
+            current_snapshot = self.env_snapshots[self.current_step]
+            
+            # 获取当前步骤之前的累积进度数据
+            cumulative_progress = [(entry['time_step'], entry['success_rate']) 
+                                 for i, entry in enumerate(self.env_snapshots) 
+                                 if i <= self.current_step]
+            
+            # 清除当前图形
+            self.fig.clear()
+            
+            # 导入可视化函数并生成新的可视化
+            from .visualization import visualize
+            
+            # 生成新的可视化图形
+            new_fig = visualize(
+                env_snapshots=[current_snapshot], 
+                progress_data=cumulative_progress, 
+                embedded_mode=True
+            )
+            
+            # 将新图形的内容复制到现有图形
+            self._copy_figure_content(new_fig, self.fig)
+            
+            # 关闭临时图形以释放内存
+            plt.close(new_fig)
+            
+            # 调整布局并重新绘制
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"更新可视化时出错: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _copy_figure_content(self, source_fig, target_fig):
+        """将源图形的内容复制到目标图形，保持visualize函数的原始布局"""
+        try:
+            # 获取源图形的所有轴
+            source_axes = source_fig.get_axes()
+            
+            if len(source_axes) == 0:
+                return
+            
+            # 清除目标图形的所有子图
+            target_fig.clear()
+            
+            # 根据visualize函数的布局重新创建子图
+            # 使用与原始visualize函数相同的subplot2grid布局
+            # 网格图（上方，占70%）：plt.subplot2grid((10, 2), (0, 0), rowspan=7, colspan=2)
+            grid_ax = plt.subplot2grid((10, 2), (0, 0), rowspan=7, colspan=2, fig=target_fig)
+            # 成功率图（下方，占20%）：plt.subplot2grid((10, 2), (7, 0), rowspan=2, colspan=2)
+            rate_ax = plt.subplot2grid((10, 2), (7, 0), rowspan=2, colspan=2, fig=target_fig)
+            
+            target_axes = [grid_ax, rate_ax]
+            
+            # 只复制前两个轴（网格图和成功率图），忽略滑动条
+            source_axes_to_copy = source_axes[:2] if len(source_axes) >= 2 else source_axes
+            
+            # 复制每个轴的内容
+            for i, (src_ax, tgt_ax) in enumerate(zip(source_axes_to_copy, target_axes)):
+                # 复制基本的图形元素
+                self._copy_axis_content(src_ax, tgt_ax)
+                
+                # 特殊处理：确保网格图的坐标轴设置正确
+                if i == 0:  # 网格图
+                    # 保持固定的坐标轴范围和网格设置
+                    tgt_ax.set_xlim(src_ax.get_xlim())
+                    tgt_ax.set_ylim(src_ax.get_ylim())
+                    tgt_ax.grid(True)
+                    # 确保刻度标签为空（因为是网格图）
+                    tgt_ax.set_xticklabels([])
+                    tgt_ax.set_yticklabels([])
+                elif i == 1:  # 成功率图
+                    # 确保成功率图的y轴范围正确
+                    tgt_ax.set_ylim(0, 1.05)
+                    tgt_ax.grid(True)
+                
+        except Exception as e:
+            print(f"复制图形内容时出错: {e}")
+            # 如果复制失败，显示错误信息
+            target_fig.clear()
+            error_ax = target_fig.add_subplot(111)
+            error_ax.text(0.5, 0.5, f"可视化更新出错:\n{str(e)}", 
+                         ha='center', va='center', transform=error_ax.transAxes,
+                         fontsize=12, color='red')
+    
+    def _copy_axis_content(self, source_ax, target_ax):
+        """
+        将源轴的内容复制到目标轴
+        """
+        try:
+            # 复制图像
+            for image in source_ax.images:
+                im_data = image.get_array()
+                extent = image.get_extent()
+                target_ax.imshow(im_data, extent=extent, aspect=image.get_aspect(),
+                               interpolation=image.get_interpolation(), 
+                               cmap=image.get_cmap(), alpha=image.get_alpha())
+            
+            # 复制线条
+            for line in source_ax.lines:
+                x_data, y_data = line.get_data()
+                target_ax.plot(x_data, y_data, 
+                             color=line.get_color(),
+                             linewidth=line.get_linewidth(),
+                             linestyle=line.get_linestyle(),
+                             marker=line.get_marker(),
+                             markersize=line.get_markersize(),
+                             alpha=line.get_alpha())
+            
+            # 复制散点图
+            for collection in source_ax.collections:
+                if hasattr(collection, 'get_offsets'):
+                    offsets = collection.get_offsets()
+                    if len(offsets) > 0:
+                        x_data = offsets[:, 0]
+                        y_data = offsets[:, 1]
+                        target_ax.scatter(x_data, y_data,
+                                        s=collection.get_sizes(),
+                                        c=collection.get_facecolors(),
+                                        marker=collection.get_paths()[0] if collection.get_paths() else 'o',
+                                        alpha=collection.get_alpha())
+            
+            # 复制文字
+            for text in source_ax.texts:
+                target_ax.text(text.get_position()[0], text.get_position()[1], 
+                             text.get_text(),
+                             fontsize=text.get_fontsize(),
+                             color=text.get_color(),
+                             alpha=text.get_alpha())
+            
+            # 复制标题和标签
+            if source_ax.get_title():
+                target_ax.set_title(source_ax.get_title())
+            if source_ax.get_xlabel():
+                target_ax.set_xlabel(source_ax.get_xlabel())
+            if source_ax.get_ylabel():
+                target_ax.set_ylabel(source_ax.get_ylabel())
+            
+            # 复制轴范围
+            target_ax.set_xlim(source_ax.get_xlim())
+            target_ax.set_ylim(source_ax.get_ylim())
+            
+            # 简化的网格设置复制 - 仅检查是否启用网格
+            try:
+                if source_ax.xaxis._major_tick_kw.get('gridOn', False):
+                    target_ax.grid(True, axis='x')
+                if source_ax.yaxis._major_tick_kw.get('gridOn', False):
+                    target_ax.grid(True, axis='y')
+            except (AttributeError, KeyError):
+                # 如果无法获取网格状态，跳过网格设置
+                pass
+            
+            # 复制图例 - 使用更简单的方法
+            try:
+                legend = source_ax.get_legend()
+                if legend:
+                    labels = [t.get_text() for t in legend.get_texts()]
+                    if labels:
+                        target_ax.legend(labels, loc='best')
+            except Exception as e:
+                print(f"跳过图例复制: {e}")
+                
+        except Exception as e:
+            print(f"复制轴内容时出错: {e}")
     
     def export_figures(self):
         """Export figures to files"""

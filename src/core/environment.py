@@ -11,13 +11,14 @@ NUM_RESCUERS = 3
 
 
 class Environment:
-    def __init__(self, grid_size=None, num_rescuers=None, verbose=True, rescuers_data=None):
+    def __init__(self, grid_size=None, num_rescuers=None, verbose=True, rescuers_data=None, training_mode=False):
         # 使用 config 中的参数，如果有传入参数则使用传入的参数
         self.GRID_SIZE = grid_size if grid_size is not None else config.get_config_param("grid_size")
         self.num_rescuers = num_rescuers if num_rescuers is not None else config.get_config_param("num_rescuers")
         self.rescuers = []
         self.disasters = {}
         self.current_time_step = 0  # 添加当前时间步属性
+        self.training_mode = training_mode  # 训练模式标识
 
         # 打印灾难规模信息
         if verbose:
@@ -73,39 +74,148 @@ class Environment:
 
         # 获取当前时间步的实际灾情生成概率
         if current_time_step is not None:
-            actual_spawn_rate = config.get_actual_spawn_rate(current_time_step)
+            # 优先使用adjust_disaster_settings设置的概率
+            if hasattr(self, 'disaster_gen_prob'):
+                actual_spawn_rate = self.disaster_gen_prob
+            else:
+                actual_spawn_rate = config.get_actual_spawn_rate(current_time_step)
             if current_time_step % 10 == 0:  # 每10个时间步打印一次概率
                 print(f"当前时间步: {current_time_step}, 灾情生成概率: {actual_spawn_rate:.3f}")
         else:
             # 如果没有提供时间步，使用基础概率
-            actual_spawn_rate = config.get_config_param("disaster_spawn_rate")
+            if hasattr(self, 'disaster_gen_prob'):
+                actual_spawn_rate = self.disaster_gen_prob
+            else:
+                actual_spawn_rate = config.get_config_param("disaster_spawn_rate")
 
-        # 随机生成新的灾情点，使用实际生成概率
-        for _ in range(int(actual_spawn_rate * self.GRID_SIZE)):  # 根据网格大小调整生成数量
-            x, y = np.random.randint(0, self.GRID_SIZE, size=2)
-            if (x, y) not in self.disasters:
-                # 先生成level，范围5-10
-                level = np.random.randint(5, 11)  # 注意上限改为11，使范围包含10
+        # 只在训练模式下启用数量上限控制
+        if self.training_mode:
+            # 统计当前活跃的灾难点数量（只计算需要救援的点）
+            active_disaster_count = sum(1 for disaster in self.disasters.values() if disaster.get("rescue_needed", 0) > 0)
+            max_disasters = self._get_disaster_limit(current_time_step)
+            
+            # 获取下限值（与adjust_disaster_settings保持一致）
+            max_steps = getattr(self, '_max_steps', 300)
+            phase1_end = int(max_steps * 2 / 3)
+            phase2_end = int(max_steps * 5 / 6)
+            
+            if current_time_step is None or current_time_step < phase1_end:
+                min_disasters = 20  # 初期阶段下限
+            elif current_time_step < phase2_end:
+                min_disasters = 5   # 中期阶段下限
+            else:
+                min_disasters = 1   # 后期阶段下限
+            
+            # 如果活跃灾难点不足，强制添加以达到下限
+            if active_disaster_count < min_disasters:
+                shortage = min_disasters - active_disaster_count
+                added_count = 0
+                max_add_attempts = shortage * 20  # 增加尝试次数
                 
-                if level <= 6:
-                    rescue_needed = np.random.randint(5, 6)  
-                elif level <= 8:
-                    rescue_needed = np.random.randint(7, 8)  
-                else:
-                    rescue_needed = np.random.randint(9, 10)  
+                for _ in range(max_add_attempts):
+                    if added_count >= shortage:
+                        break
+                        
+                    x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                    if (x, y) not in self.disasters:
+                        # 生成新的灾难点
+                        level = np.random.randint(5, 11)  # 5-10之间
+                        
+                        # 统一rescue_needed的生成范围，与部署模式保持一致
+                        if level <= 6:
+                            rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                        elif level <= 8:
+                            rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                        else:
+                            rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                        
+                        # 新灾情点加入初始时间和时间步信息
+                        self.disasters[(x, y)] = {
+                            "level": level,
+                            "rescue_needed": rescue_needed,
+                            "time_step": self.current_time_step if current_time_step is None else current_time_step,
+                            "frozen_level": False,
+                            "frozen_rescue": False,
+                            "rescue_success": False,
+                            "show_red_x": 0
+                        }
+                        added_count += 1
+            
+            # 只有在未达到活跃灾难点上限时才生成新的灾情点
+            elif active_disaster_count < max_disasters:
+                # 增加灾难点生成数量，确保有足够的挑战性
+                target_spawn_count = int(actual_spawn_rate * self.GRID_SIZE / 5)  # 从20改为5，增加生成数量
+                if target_spawn_count < 2 and actual_spawn_rate > 0.1:
+                    target_spawn_count = 2  # 确保至少尝试生成2个
                 
-                # 新灾情点加入初始时间和时间步信息
-                self.disasters[(x, y)] = {
-                    "level": level,
-                    "rescue_needed": rescue_needed,
-                    "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
-                    "frozen_level": False,  # 初始状态为未冻结
-                    "frozen_rescue": False,  # 初始状态为未冻结
-                    "rescue_success": False,  # 初始状态为未救援成功
-                    "show_red_x": 0  # 红叉显示计数器，0表示不显示
-                }
-                print(
-                    f"🔴 新灾情点出现在 {x, y}，等级：{self.disasters[(x, y)]['level']}，需要救援：{self.disasters[(x, y)]['rescue_needed']}，时间步：{self.disasters[(x, y)]['time_step']}")
+                # 限制生成数量不超过上限
+                max_new_disasters = max_disasters - active_disaster_count
+                target_spawn_count = min(target_spawn_count, max_new_disasters)
+                
+                # 随机选择位置生成灾难点
+                new_disasters_count = 0
+                attempts = 0
+                max_attempts = target_spawn_count * 10  # 最多尝试10倍的次数
+                
+                while new_disasters_count < target_spawn_count and attempts < max_attempts:
+                    x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                    attempts += 1
+                    
+                    # 如果位置已被占用，跳过
+                    if (x, y) in self.disasters:
+                        continue
+                    
+                    # 生成新的灾难点
+                    level = np.random.randint(5, 11)  # 5-10之间
+                    
+                    # 统一rescue_needed的生成范围，与部署模式保持一致
+                    if level <= 6:
+                        rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                    elif level <= 8:
+                        rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                    else:
+                        rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                    
+                    # 新灾情点加入初始时间和时间步信息
+                    self.disasters[(x, y)] = {
+                        "level": level,
+                        "rescue_needed": rescue_needed,
+                        "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
+                        "frozen_level": False,  # 初始状态为未冻结
+                        "frozen_rescue": False,  # 初始状态为未冻结
+                        "rescue_success": False,  # 初始状态为未救援成功
+                        "show_red_x": 0  # 红叉显示计数器，0表示不显示
+                    }
+                    new_disasters_count += 1
+        else:
+            # 非训练模式，不启用数量上限控制
+            # 随机生成新的灾情点
+            for _ in range(int(actual_spawn_rate * self.GRID_SIZE)):
+                x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                if (x, y) not in self.disasters:
+                    # 先生成level，范围5-10
+                    level = np.random.randint(5, 11)  # 注意上限改为11，使范围包含10
+                    
+                    # 统一rescue_needed的生成范围，与部署模式保持一致
+                    if level <= 6:
+                        rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                    elif level <= 8:
+                        rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                    else:
+                        rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                    
+                    # 新灾情点加入初始时间和时间步信息
+                    self.disasters[(x, y)] = {
+                        "level": level,
+                        "rescue_needed": rescue_needed,
+                        "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
+                        "frozen_level": False,  # 初始状态为未冻结
+                        "frozen_rescue": False,  # 初始状态为未冻结
+                        "rescue_success": False,  # 初始状态为未救援成功
+                        "show_red_x": 0  # 红叉显示计数器，0表示不显示
+                    }
+                    print(
+                        f"🔴 新灾情点出现在 {x, y}，等级：{self.disasters[(x, y)]['level']}，需要救援：{self.disasters[(x, y)]['rescue_needed']}，时间步：{self.disasters[(x, y)]['time_step']}")
 
         # 自然减弱已有灾情（灾情会随时间自然减弱）
         for pos, disaster in list(self.disasters.items()):  # 使用list复制，避免在迭代中修改字典
@@ -114,19 +224,24 @@ class Environment:
                 continue
 
             if disaster["level"] > 0:
+                # 统一自然减弱逻辑，无论训练模式还是部署模式都使用相同的减弱机制
                 disaster["level"] -= np.random.randint(0, 2)  # 随机减弱0-1点
                 disaster["level"] = max(0, disaster["level"])  # 确保不会为负
 
                 # 如果自然减弱导致level降至0但rescue_needed>0，标记为救援失败
                 if disaster["level"] <= 0 and disaster.get("rescue_needed", 0) > 0:
-                    print(f"⚠️ 灾情点 {pos} 自然减弱至level=0但仍需救援，标记为救援失败！")
+                    if not self.training_mode:  # 只在非训练模式下打印
+                        print(f"⚠️ 灾情点 {pos} 自然减弱至level=0但仍需救援，标记为救援失败！")
                     disaster["show_red_x"] = 2  # 显示红叉
                     disaster["frozen_level"] = True  # 冻结level，防止进一步减弱
+                    disaster["frozen_rescue"] = True  # 冻结救援状态
                     disaster["rescue_success"] = False  # 明确标记为救援失败
+                    disaster["rescue_needed"] = 0  # 将rescue_needed设置为0，使其不再被计算为活跃灾难点
                     # 设置结束时间步
                     if current_time_step:
                         disaster["end_time_step"] = current_time_step
-                    print(f"⚪ 灾情点 {pos} 未能成功救援！")
+                    if not self.training_mode:  # 只在非训练模式下打印
+                        print(f"⚪ 灾情点 {pos} 未能成功救援！")
 
     def update_disasters_silent(self, current_time_step=None):
         """
@@ -145,35 +260,193 @@ class Environment:
 
         # 获取当前时间步的实际灾情生成概率
         if current_time_step is not None:
-            actual_spawn_rate = config.get_actual_spawn_rate(current_time_step)
+            # 优先使用adjust_disaster_settings设置的概率
+            if hasattr(self, 'disaster_gen_prob'):
+                actual_spawn_rate = self.disaster_gen_prob
+            else:
+                actual_spawn_rate = config.get_actual_spawn_rate(current_time_step)
         else:
             # 如果没有提供时间步，使用基础概率
-            actual_spawn_rate = config.get_config_param("disaster_spawn_rate")
+            if hasattr(self, 'disaster_gen_prob'):
+                actual_spawn_rate = self.disaster_gen_prob
+            else:
+                actual_spawn_rate = config.get_config_param("disaster_spawn_rate")
 
-        # 随机生成新的灾情点，使用实际生成概率
-        for _ in range(int(actual_spawn_rate * self.GRID_SIZE)):  # 根据网格大小调整生成数量
-            x, y = np.random.randint(0, self.GRID_SIZE, size=2)
-            if (x, y) not in self.disasters:
-                # 先生成level，范围5-10
-                level = np.random.randint(5, 11)  # 注意上限改为11，使范围包含10
+        # 只在训练模式下启用数量上限控制
+        if self.training_mode:
+            # 统计当前活跃的灾难点数量（只计算需要救援的点）
+            active_disaster_count = sum(1 for disaster in self.disasters.values() if disaster.get("rescue_needed", 0) > 0)
+            max_disasters = self._get_disaster_limit(current_time_step)
+            
+            # 获取下限值（与adjust_disaster_settings保持一致）
+            max_steps = getattr(self, '_max_steps', 300)
+            phase1_end = int(max_steps * 2 / 3)
+            phase2_end = int(max_steps * 5 / 6)
+            
+            if current_time_step is None or current_time_step < phase1_end:
+                min_disasters = 20  # 初期阶段下限
+            elif current_time_step < phase2_end:
+                min_disasters = 5   # 中期阶段下限
+            else:
+                min_disasters = 1   # 后期阶段下限
+            
+            # 如果活跃灾难点不足，强制添加以达到下限
+            if active_disaster_count < min_disasters:
+                shortage = min_disasters - active_disaster_count
+                added_count = 0
+                max_add_attempts = shortage * 20  # 增加尝试次数
                 
-                if level <= 6:
-                    rescue_needed = np.random.randint(5, 6)  
-                elif level <= 8:
-                    rescue_needed = np.random.randint(7, 8)  
-                else:
-                    rescue_needed = np.random.randint(9, 10)  
+                for _ in range(max_add_attempts):
+                    if added_count >= shortage:
+                        break
+                        
+                    x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                    if (x, y) not in self.disasters:
+                        # 生成新的灾难点
+                        level = np.random.randint(5, 11)  # 5-10之间
+                        
+                        # 统一rescue_needed的生成范围，与部署模式保持一致
+                        if level <= 6:
+                            rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                        elif level <= 8:
+                            rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                        else:
+                            rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                        
+                        # 新灾情点加入初始时间和时间步信息
+                        self.disasters[(x, y)] = {
+                            "level": level,
+                            "rescue_needed": rescue_needed,
+                            "time_step": self.current_time_step if current_time_step is None else current_time_step,
+                            "frozen_level": False,
+                            "frozen_rescue": False,
+                            "rescue_success": False,
+                            "show_red_x": 0
+                        }
+                        added_count += 1
+            
+            # 只有在未达到活跃灾难点上限时才生成新的灾情点
+            elif active_disaster_count < max_disasters:
+                # 增加灾难点生成数量，确保有足够的挑战性
+                target_spawn_count = int(actual_spawn_rate * self.GRID_SIZE / 5)  # 从20改为5，增加生成数量
+                if target_spawn_count < 2 and actual_spawn_rate > 0.1:
+                    target_spawn_count = 2  # 确保至少尝试生成2个
                 
-                # 新灾情点加入初始时间和时间步信息
-                self.disasters[(x, y)] = {
-                    "level": level,
-                    "rescue_needed": rescue_needed,
-                    "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
-                    "frozen_level": False,  # 初始状态为未冻结
-                    "frozen_rescue": False,  # 初始状态为未冻结
-                    "rescue_success": False,  # 初始状态为未救援成功
-                    "show_red_x": 0  # 红叉显示计数器，0表示不显示
-                }
+                # 限制生成数量不超过上限
+                max_new_disasters = max_disasters - active_disaster_count
+                target_spawn_count = min(target_spawn_count, max_new_disasters)
+                
+                # 随机选择位置生成灾难点
+                new_disasters_count = 0
+                attempts = 0
+                max_attempts = target_spawn_count * 10  # 最多尝试10倍的次数
+                
+                while new_disasters_count < target_spawn_count and attempts < max_attempts:
+                    x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                    attempts += 1
+                    
+                    # 如果位置已被占用，跳过
+                    if (x, y) in self.disasters:
+                        continue
+                    
+                    # 生成新的灾难点
+                    level = np.random.randint(5, 11)  # 5-10之间
+                    
+                    # 统一rescue_needed的生成范围，与部署模式保持一致
+                    if level <= 6:
+                        rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                    elif level <= 8:
+                        rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                    else:
+                        rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                    
+                    # 新灾情点加入初始时间和时间步信息
+                    self.disasters[(x, y)] = {
+                        "level": level,
+                        "rescue_needed": rescue_needed,
+                        "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
+                        "frozen_level": False,  # 初始状态为未冻结
+                        "frozen_rescue": False,  # 初始状态为未冻结
+                        "rescue_success": False,  # 初始状态为未救援成功
+                        "show_red_x": 0  # 红叉显示计数器，0表示不显示
+                    }
+                    new_disasters_count += 1
+        else:
+            # 非训练模式，不启用数量上限控制
+            # 随机生成新的灾情点
+            for _ in range(int(actual_spawn_rate * self.GRID_SIZE)):
+                x, y = np.random.randint(0, self.GRID_SIZE, size=2)
+                if (x, y) not in self.disasters:
+                    # 先生成level，范围5-10
+                    level = np.random.randint(5, 11)  # 注意上限改为11，使范围包含10
+                    
+                    # 统一rescue_needed的生成范围，与部署模式保持一致
+                    if level <= 6:
+                        rescue_needed = np.random.randint(5, 7)  # 5-6之间  
+                    elif level <= 8:
+                        rescue_needed = np.random.randint(7, 9)  # 7-8之间
+                    else:
+                        rescue_needed = np.random.randint(9, 11)  # 9-10之间
+                    
+                    # 新灾情点加入初始时间和时间步信息
+                    self.disasters[(x, y)] = {
+                        "level": level,
+                        "rescue_needed": rescue_needed,
+                        "time_step": self.current_time_step if current_time_step is None else current_time_step,  # 记录灾情点创建的时间步
+                        "frozen_level": False,  # 初始状态为未冻结
+                        "frozen_rescue": False,  # 初始状态为未冻结
+                        "rescue_success": False,  # 初始状态为未救援成功
+                        "show_red_x": 0  # 红叉显示计数器，0表示不显示
+                    }
+                    print(
+                        f"🔴 新灾情点出现在 {x, y}，等级：{self.disasters[(x, y)]['level']}，需要救援：{self.disasters[(x, y)]['rescue_needed']}，时间步：{self.disasters[(x, y)]['time_step']}")
+
+        # 自然减弱已有灾情（与update_disasters方法保持一致）
+        for pos, disaster in list(self.disasters.items()):  # 使用list复制，避免在迭代中修改字典
+            # 只跳过rescue_needed=0的灾情点，不再跳过level=0的点
+            if disaster.get("frozen_rescue", False):
+                continue
+
+            if disaster["level"] > 0:
+                # 统一自然减弱逻辑，无论训练模式还是部署模式都使用相同的减弱机制
+                disaster["level"] -= np.random.randint(0, 2)  # 随机减弱0-1点
+                disaster["level"] = max(0, disaster["level"])  # 确保不会为负
+
+                # 如果自然减弱导致level降至0但rescue_needed>0，标记为救援失败
+                if disaster["level"] <= 0 and disaster.get("rescue_needed", 0) > 0:
+                    disaster["show_red_x"] = 2  # 显示红叉
+                    disaster["frozen_level"] = True  # 冻结level，防止进一步减弱
+                    disaster["frozen_rescue"] = True  # 冻结救援状态
+                    disaster["rescue_success"] = False  # 明确标记为救援失败
+                    disaster["rescue_needed"] = 0  # 将rescue_needed设置为0，使其不再被计算为活跃灾难点
+                    # 设置结束时间步
+                    if current_time_step:
+                        disaster["end_time_step"] = current_time_step
+
+    def _get_disaster_limit(self, current_time_step=None, max_steps=None):
+        """
+        根据当前时间步获取灾难数量上限
+        这个方法与rl_util.py中的逻辑保持一致
+        """
+        if current_time_step is None:
+            # 如果没有时间步信息，返回默认上限
+            return 50
+        
+        # 获取最大步数 - 优先使用传入的参数，否则使用硬编码的300步
+        if max_steps is None:
+            max_steps = getattr(self, '_max_steps', 300)  # 硬编码为300步
+        
+        # 计算阶段边界（与adjust_disaster_settings保持一致）
+        phase1_end = int(max_steps * 2 / 3)  # 初期结束
+        phase2_end = int(max_steps * 5 / 6)  # 中期结束
+        
+        # 根据训练阶段返回不同的灾难数量上限，与adjust_disaster_settings保持一致
+        if current_time_step < phase1_end:  # 初期阶段
+            return 50  # 对应adjust_disaster_settings中的max_disasters = 50
+        elif current_time_step < phase2_end:  # 中期阶段
+            return 20  # 对应adjust_disaster_settings中的max_disasters = 20
+        else:  # 后期阶段
+            return 5   # 对应adjust_disaster_settings中的max_disasters = 5
 
     def get_state_for_rescuer(self, rescuer_idx):
         """
@@ -186,7 +459,7 @@ class Environment:
             
             # 创建一个临时的MARLController以获取状态表示
             controller = MARLController(
-                grid_size=self.GRID_SIZE, 
+                env_or_grid_size=self.GRID_SIZE, 
                 num_rescuers=len(self.rescuers)
             )
             return controller.build_state(rescuer_idx, self.rescuers, self.disasters)
@@ -209,9 +482,14 @@ class Environment:
                 all_resolved = False
                 break
         
-        # 检查是否达到最大时间步
-        from src.core import config
-        time_limit_reached = self.current_time_step >= config.SIMULATION_TIME - 1
+        # 检查是否达到最大时间步 - 使用动态的max_steps而不是硬编码的SIMULATION_TIME
+        max_steps = getattr(self, '_max_steps', None)
+        if max_steps is not None:
+            time_limit_reached = self.current_time_step >= max_steps - 1
+        else:
+            # 如果没有设置_max_steps，则使用config中的默认值
+            from src.core import config
+            time_limit_reached = self.current_time_step >= config.SIMULATION_TIME - 1
         
         return all_resolved or time_limit_reached
     
